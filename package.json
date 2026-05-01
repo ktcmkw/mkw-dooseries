@@ -1,0 +1,16 @@
+{
+  "name": "mkw-dooseries",
+  "version": "1.0.0",
+  "description": "MKW - dooseries: Thai drama streaming site",
+  "main": "serve.js",
+  "scripts": {
+    "start": "node serve.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mongodb": "^6.8.0"
+  },
+  "private": true
+}

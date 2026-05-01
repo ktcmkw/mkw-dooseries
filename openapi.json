@@ -1,0 +1,183 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Dramabox API",
+    "description": "REST API providing access to Dramabox content (TH/EN). จัดทำโดย Cyberasfe Panvila",
+    "version": "1.2"
+  },
+  "servers": [
+    { "url": "https://api-vipboxexxs.vercel.app", "description": "Production" }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["meta"],
+        "summary": "หน้า documentation (HTML)",
+        "operationId": "root",
+        "responses": {
+          "200": { "description": "HTML documentation page" }
+        }
+      }
+    },
+    "/api/home": {
+      "get": {
+        "tags": ["browse"],
+        "summary": "รายการละครล่าสุด (หน้าแรก)",
+        "operationId": "home",
+        "responses": {
+          "200": { "description": "Latest dramas", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/vip": {
+      "get": {
+        "tags": ["browse"],
+        "summary": "รายการละครใน VIP / Theater channel",
+        "operationId": "vip",
+        "responses": {
+          "200": { "description": "VIP drama list", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/recommend": {
+      "get": {
+        "tags": ["browse"],
+        "summary": "รายการละครแนะนำ",
+        "operationId": "recommend",
+        "responses": {
+          "200": { "description": "Recommended dramas", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "tags": ["search"],
+        "summary": "ค้นหาละครตาม keyword",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "minLength": 1 },
+            "description": "คำค้นหา"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Search results", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/categories": {
+      "get": {
+        "tags": ["category"],
+        "summary": "รายการหมวดหมู่ทั้งหมด",
+        "operationId": "categories",
+        "responses": {
+          "200": { "description": "All categories", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/category/{id}": {
+      "get": {
+        "tags": ["category"],
+        "summary": "ละครตามหมวดหมู่",
+        "operationId": "category_by_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Category ID จาก /api/categories"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Dramas in category", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/detail/{bookId}/v2": {
+      "get": {
+        "tags": ["drama"],
+        "summary": "รายละเอียดละคร (v2)",
+        "operationId": "detail_v2",
+        "parameters": [
+          {
+            "name": "bookId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "DramaBox bookId"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Drama detail", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/chapters/{bookId}": {
+      "get": {
+        "tags": ["drama"],
+        "summary": "รายการตอนทั้งหมดของละคร",
+        "operationId": "chapters",
+        "parameters": [
+          {
+            "name": "bookId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "Chapter list", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/api/stream": {
+      "get": {
+        "tags": ["drama"],
+        "summary": "ลิงก์สตรีม (m3u8/mp4) ของตอนที่ระบุ",
+        "operationId": "stream",
+        "parameters": [
+          {
+            "name": "bookId",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "DramaBox bookId"
+          },
+          {
+            "name": "index",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1 },
+            "description": "ลำดับตอน (ปรับตามที่ได้จาก /api/chapters — ชื่อ param อาจต้องทดลอง: index / chapter / ep)"
+          }
+        ],
+        "responses": {
+          "200": { "description": "Stream URLs", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    },
+    "/download/{bookId}": {
+      "get": {
+        "tags": ["drama"],
+        "summary": "ดึงทุกตอนของละครเป็น JSON",
+        "operationId": "download_all",
+        "parameters": [
+          {
+            "name": "bookId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "All episodes JSON", "content": { "application/json": { "schema": {} } } }
+        }
+      }
+    }
+  },
+  "components": { "schemas": {} }
+}

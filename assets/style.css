@@ -1,0 +1,37 @@
+body{font-family:'Sarabun','Segoe UI',system-ui,sans-serif;background:#0a0a0f;color:#f3f4f6}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:#0a0a0f}
+::-webkit-scrollbar-thumb{background:#27272a;border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:#3f3f46}
+
+.chip{transition:all .15s;white-space:nowrap}
+.chip.active{background:linear-gradient(135deg,#ef4444,#dc2626);color:white;box-shadow:0 4px 14px rgba(239,68,68,.4)}
+
+.card{transition:transform .25s,box-shadow .25s}
+.card:hover{transform:translateY(-4px) scale(1.03);box-shadow:0 10px 30px rgba(0,0,0,.6),0 0 0 1px rgba(239,68,68,.4)}
+.card-img{aspect-ratio:3/5;background:#18181b}
+
+.gradient-fade{background:linear-gradient(180deg,transparent 0%,transparent 40%,rgba(0,0,0,.95) 100%)}
+.skeleton{background:linear-gradient(90deg,#18181b 0%,#27272a 50%,#18181b 100%);background-size:200% 100%;animation:shimmer 1.4s infinite}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+.label-pill{font-size:11px;padding:3px 8px;border-radius:999px;background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)}
+.glow-text{text-shadow:0 2px 8px rgba(0,0,0,.8)}
+
+.fade-in{animation:fade .3s ease-out}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.slide-up{animation:slide .35s cubic-bezier(.16,1,.3,1)}
+@keyframes slide{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+
+.error-banner{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fca5a5}
+.warn-banner{background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);color:#fde68a}
+.info-banner{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);color:#93c5fd}
+
+.nav-link{transition:color .15s;padding:4px 0;border-bottom:2px solid transparent}
+.nav-link.active{color:#fca5a5;border-bottom-color:#ef4444}
+.nav-link:hover{color:#fff}
+
+.video-wrap{aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;border:1px solid #27272a}
+.video-wrap video{width:100%;height:100%;display:block}
+
+.line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
