@@ -1418,16 +1418,20 @@ async function playEpisode(ep, ctx) {
 
   const wrap = $('#videoWrap');
   let video = wrap.querySelector('#player');
-  if (!video) {
-    wrap.innerHTML = `<video id="player" controls playsinline class="w-full h-full" controlslist="nodownload" oncontextmenu="return false"></video>`;
+  const firstTime = !video;
+  if (firstTime) {
+    wrap.classList.add('relative');
+    wrap.innerHTML = `<video id="player" playsinline disablepictureinpicture class="absolute inset-0 w-full h-full bg-black" oncontextmenu="return false"></video>`;
     video = wrap.querySelector('#player');
+    buildCustomControls(video, wrap);
   } else if (video._ctrl) {
-    // ยกเลิก listeners เก่า — ไม่ replace element เพื่อรักษา fullscreen state
     video._ctrl.abort();
   }
 
   const ctrl = new AbortController();
   video._ctrl = ctrl;
+  bindCustomControls(video, wrap, ctrl);
+
   let attemptIdx = 0;
   const fallbackOrder = [currentQuality, ...qualities.filter(q => q !== currentQuality)];
 
@@ -1441,6 +1445,8 @@ async function playEpisode(ep, ctx) {
     video.play().catch(() => {/* autoplay อาจโดน block */});
   }
   video.addEventListener('error', () => {
+    // Skip ถ้ากำลัง switch quality (ให้ changeQuality handle เอง)
+    if (video._switchingQuality) return;
     attemptIdx++;
     if (attemptIdx < fallbackOrder.length) tryPlay();
   }, { signal: ctrl.signal });
@@ -1449,17 +1455,198 @@ async function playEpisode(ep, ctx) {
   function changeQuality(label) {
     const q = qualities.find(x => x.label === label);
     if (!q || q.url === video.src) return;
-    const t = video.currentTime;
+
+    const savedTime = video.currentTime;
     const wasPlaying = !video.paused;
-    video.src = q.url;
-    video.currentTime = t;
-    if (wasPlaying) video.play().catch(() => {});
+    const prev = currentQuality;
+
+    video._switchingQuality = true;
+
+    const cleanup = () => {
+      video.removeEventListener('loadedmetadata', onLoaded);
+      video.removeEventListener('error', onError);
+      video._switchingQuality = false;
+    };
+    const onLoaded = () => {
+      cleanup();
+      try { if (!isNaN(savedTime) && isFinite(savedTime)) video.currentTime = savedTime; } catch {}
+      if (wasPlaying) video.play().catch(() => {});
+    };
+    const onError = () => {
+      cleanup();
+      // Revert กลับ quality เดิม — user ควรดูต่อได้
+      const sel = document.getElementById('qualitySel');
+      if (sel) sel.value = prev.label;
+      currentQuality = prev;
+      video.src = prev.url;
+      video.addEventListener('loadedmetadata', () => {
+        try { if (!isNaN(savedTime) && isFinite(savedTime)) video.currentTime = savedTime; } catch {}
+        if (wasPlaying) video.play().catch(() => {});
+      }, { once: true });
+      $('#msg').insertAdjacentHTML('afterbegin', `<div class="warn-banner rounded-lg p-2 text-xs mb-2">⚠️ คุณภาพ ${label} เล่นไม่ได้ — กลับไป ${prev.label}</div>`);
+      setTimeout(() => { const w = $('#msg .warn-banner'); if (w) w.remove(); }, 3000);
+    };
+
+    video.addEventListener('loadedmetadata', onLoaded, { once: true });
+    video.addEventListener('error', onError, { once: true });
+
     currentQuality = q;
     localStorage.setItem('mkw_quality', label);
+    video.src = q.url;
+    video.load();
   }
 
   // Auto-next + next ep button + quality selector + swipe
   setupAutoNext(ep, video, ctx, ctrl, { qualities, getCurrentQuality: () => currentQuality, changeQuality });
+}
+
+function buildCustomControls(video, wrap) {
+  // Center play button (โชว์เมื่อ pause)
+  const centerBtn = document.createElement('button');
+  centerBtn.id = 'centerPlay';
+  centerBtn.className = 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-black/70 text-white text-4xl rounded-full flex items-center justify-center z-30 shadow-xl backdrop-blur-sm';
+  centerBtn.textContent = '▶';
+  centerBtn.style.display = 'none';
+  centerBtn.setAttribute('aria-label', 'play');
+  wrap.appendChild(centerBtn);
+
+  // Overlay (tap zone + bottom controls)
+  const overlay = document.createElement('div');
+  overlay.id = 'ctrlOverlay';
+  overlay.className = 'absolute inset-0 flex flex-col z-20 transition-opacity duration-300';
+  overlay.innerHTML = `
+    <div id="tapZone" class="flex-1"></div>
+    <div id="bottomBar" class="p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent select-none">
+      <input id="seekBar" type="range" min="0" max="1000" value="0" step="1" class="w-full h-1 accent-red-500 cursor-pointer mb-2"/>
+      <div class="flex items-center justify-between text-white text-xs">
+        <div class="flex items-center gap-3">
+          <button id="playPauseBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="play/pause">▶</button>
+          <span class="tabular-nums"><span id="curTime">0:00</span> / <span id="totTime">0:00</span></span>
+        </div>
+        <button id="fsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="fullscreen">⛶</button>
+      </div>
+    </div>
+  `;
+  wrap.appendChild(overlay);
+}
+
+function bindCustomControls(video, wrap, ctrl) {
+  const overlay = wrap.querySelector('#ctrlOverlay');
+  const centerBtn = wrap.querySelector('#centerPlay');
+  if (!overlay || !centerBtn) return;
+
+  const seekBar = overlay.querySelector('#seekBar');
+  const curTime = overlay.querySelector('#curTime');
+  const totTime = overlay.querySelector('#totTime');
+  const playPauseBtn = overlay.querySelector('#playPauseBtn');
+  const fsBtn = overlay.querySelector('#fsBtn');
+  const tapZone = overlay.querySelector('#tapZone');
+
+  const pad = n => String(Math.floor(n)).padStart(2, '0');
+  const fmt = s => {
+    if (!s || isNaN(s) || !isFinite(s)) return '0:00';
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  };
+
+  let hideTimer = null;
+  const showCtrls = () => {
+    overlay.style.opacity = '1';
+    overlay.style.pointerEvents = 'auto';
+    clearTimeout(hideTimer);
+    if (!video.paused) hideTimer = setTimeout(() => {
+      overlay.style.opacity = '0';
+      overlay.style.pointerEvents = 'none';
+    }, 3000);
+  };
+  showCtrls();
+
+  let seekDragging = false;
+  const opts = { signal: ctrl.signal };
+
+  // Tap center video → toggle play/pause + show controls
+  tapZone.addEventListener('click', e => {
+    e.stopPropagation();
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+    showCtrls();
+  }, opts);
+  centerBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    video.play().catch(() => {});
+  }, opts);
+  playPauseBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+    showCtrls();
+  }, opts);
+
+  // Video state → update UI
+  video.addEventListener('play', () => {
+    playPauseBtn.textContent = '⏸';
+    centerBtn.style.display = 'none';
+    showCtrls();
+  }, opts);
+  video.addEventListener('pause', () => {
+    playPauseBtn.textContent = '▶';
+    centerBtn.style.display = 'flex';
+    clearTimeout(hideTimer);
+    overlay.style.opacity = '1';
+    overlay.style.pointerEvents = 'auto';
+  }, opts);
+
+  video.addEventListener('loadedmetadata', () => {
+    totTime.textContent = fmt(video.duration);
+    seekBar.max = Math.max(1, Math.floor(video.duration * 1000));
+  }, opts);
+  video.addEventListener('timeupdate', () => {
+    if (!seekDragging) {
+      seekBar.value = Math.floor(video.currentTime * 1000);
+      curTime.textContent = fmt(video.currentTime);
+    }
+  }, opts);
+
+  // Seek drag
+  seekBar.addEventListener('input', () => {
+    seekDragging = true;
+    curTime.textContent = fmt(seekBar.value / 1000);
+    showCtrls();
+  }, opts);
+  seekBar.addEventListener('change', () => {
+    video.currentTime = seekBar.value / 1000;
+    seekDragging = false;
+    showCtrls();
+  }, opts);
+
+  // Fullscreen on WRAP (not video) → swipe + popup ยังทำงานใน fullscreen
+  fsBtn.addEventListener('click', async e => {
+    e.stopPropagation();
+    try {
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fsEl) {
+        await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
+      } else {
+        await (wrap.requestFullscreen?.() || wrap.webkitRequestFullscreen?.() || video.webkitEnterFullscreen?.());
+      }
+    } catch {}
+  }, opts);
+
+  // Fullscreen state → adjust video sizing
+  const onFsChange = () => {
+    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    wrap.classList.toggle('fs-active', isFs);
+    fsBtn.textContent = isFs ? '⛶' : '⛶';
+    showCtrls();
+  };
+  document.addEventListener('fullscreenchange', onFsChange, opts);
+  document.addEventListener('webkitfullscreenchange', onFsChange, opts);
+
+  // Show controls on any interaction in wrap
+  wrap.addEventListener('touchstart', () => showCtrls(), { passive: true, signal: ctrl.signal });
+  wrap.addEventListener('mousemove', () => showCtrls(), { passive: true, signal: ctrl.signal });
 }
 
 function getQualityOptions(ep) {
@@ -1588,6 +1775,9 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
     let sy = 0, sx = 0, st = 0;
     const onStart = e => {
       if (e.touches.length !== 1) { st = 0; return; }
+      // Skip ถ้าเริ่ม touch บน controls (ปุ่ม play/pause, seekbar, fullscreen)
+      const tgt = e.target;
+      if (tgt && tgt.closest && tgt.closest('#bottomBar, #centerPlay')) { st = 0; return; }
       const t = e.touches[0];
       sy = t.clientY; sx = t.clientX; st = Date.now();
     };
