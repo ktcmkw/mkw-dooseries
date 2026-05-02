@@ -1430,12 +1430,6 @@ async function playEpisode(ep, ctx) {
 
   const ctrl = new AbortController();
   video._ctrl = ctrl;
-  const playerOpts = {
-    qualities,
-    getCurrentQuality: () => currentQuality,
-    changeQuality: null, // ตั้งหลังประกาศฟังก์ชัน
-  };
-  bindCustomControls(video, wrap, ctrl, playerOpts);
 
   let attemptIdx = 0;
   const fallbackOrder = [currentQuality, ...qualities.filter(q => q !== currentQuality)];
@@ -1450,12 +1444,10 @@ async function playEpisode(ep, ctx) {
     video.play().catch(() => {/* autoplay อาจโดน block */});
   }
   video.addEventListener('error', () => {
-    // Skip ถ้ากำลัง switch quality (ให้ changeQuality handle เอง)
     if (video._switchingQuality) return;
     attemptIdx++;
     if (attemptIdx < fallbackOrder.length) tryPlay();
   }, { signal: ctrl.signal });
-  tryPlay();
 
   function changeQuality(label) {
     const q = qualities.find(x => x.label === label);
@@ -1479,9 +1471,6 @@ async function playEpisode(ep, ctx) {
     };
     const onError = () => {
       cleanup();
-      // Revert กลับ quality เดิม — user ควรดูต่อได้
-      const sel = document.getElementById('qualitySel');
-      if (sel) sel.value = prev.label;
       currentQuality = prev;
       video.src = prev.url;
       video.addEventListener('loadedmetadata', () => {
@@ -1501,9 +1490,18 @@ async function playEpisode(ep, ctx) {
     video.load();
   }
 
+  // Bind controls หลัง changeQuality พร้อมแล้ว
+  const playerOpts = {
+    qualities,
+    getCurrentQuality: () => currentQuality,
+    changeQuality,
+  };
+  bindCustomControls(video, wrap, ctrl, playerOpts);
+
+  tryPlay();
+
   // Auto-next + next ep button + swipe
-  playerOpts.changeQuality = changeQuality;
-  setupAutoNext(ep, video, ctx, ctrl, { qualities, getCurrentQuality: () => currentQuality, changeQuality });
+  setupAutoNext(ep, video, ctx, ctrl, playerOpts);
 }
 
 function buildCustomControls(video, wrap) {
@@ -1604,16 +1602,31 @@ function bindCustomControls(video, wrap, ctrl, playerOpts) {
   // ---- 3-zone tap handling ----
   // Double-tap ซ้าย = -10s, Double-tap ขวา = +10s, Single-tap กลาง = play/pause + show controls
   let lastTap = 0, lastZone = null, singleTapTimer = null;
+  const toggleFs = async () => {
+    try {
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fsEl) {
+        await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
+      } else {
+        await (wrap.requestFullscreen?.() || wrap.webkitRequestFullscreen?.() || video.webkitEnterFullscreen?.());
+      }
+    } catch {}
+  };
   const handleTap = zone => {
     const now = Date.now();
     const dt = now - lastTap;
     clearTimeout(singleTapTimer);
-    if (dt < 350 && lastZone === zone && (zone === 'L' || zone === 'R')) {
-      // Double-tap seek
-      const delta = zone === 'L' ? -10 : 10;
-      video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + delta));
-      showFb(zone === 'L' ? '◀◀ -10s' : '+10s ▶▶');
-      showCtrls();
+    if (dt < 350 && lastZone === zone) {
+      if (zone === 'L' || zone === 'R') {
+        const delta = zone === 'L' ? -10 : 10;
+        video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + delta));
+        showFb(zone === 'L' ? '◀◀ -10s' : '+10s ▶▶');
+        showCtrls();
+      } else if (zone === 'C') {
+        const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+        showFb(fsEl ? '⤢ ออก' : '⤢ เต็มจอ');
+        toggleFs();
+      }
       lastTap = 0; lastZone = null;
       return;
     }
@@ -1850,27 +1863,22 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
   if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
   if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
 
-  // Swipe gesture — ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → แสดง popup ยืนยัน (video เล่นต่อปกติ)
+  // Swipe gesture (pointer events — ใช้ได้ทุก input type + fullscreen)
+  // ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → popup ยืนยัน (video เล่นต่อปกติ)
   const wrap = $('#videoWrap');
   if ((nextEp || prevEp) && wrap) {
-    let sy = 0, sx = 0, st = 0, tracking = false;
-    const isInPlayer = tgt => tgt && (wrap === tgt || wrap.contains(tgt) || (document.fullscreenElement || document.webkitFullscreenElement) === wrap);
+    let sy = 0, sx = 0, active = false, pid = null;
     const isOnControls = tgt => tgt && tgt.closest && tgt.closest('#bottomBar, #qualityBtn, #qMenu, #centerPlay');
 
-    const onStart = e => {
-      if (!isInPlayer(e.target) || e.touches.length !== 1) { tracking = false; return; }
-      if (isOnControls(e.target)) { tracking = false; return; }
-      const t = e.touches[0];
-      sy = t.clientY; sx = t.clientX; st = Date.now();
-      tracking = true;
+    const onDown = e => {
+      if (isOnControls(e.target)) { active = false; return; }
+      sy = e.clientY; sx = e.clientX; active = true; pid = e.pointerId;
     };
-    const onEnd = e => {
-      if (!tracking || e.changedTouches.length !== 1) return;
-      tracking = false;
-      const t = e.changedTouches[0];
-      const dy = t.clientY - sy;
-      const dx = t.clientX - sx;
-      // Thresholds: ระยะ ≥40px + vertical dominant (ไม่สน dt)
+    const onUp = e => {
+      if (!active || e.pointerId !== pid) return;
+      active = false;
+      const dy = e.clientY - sy;
+      const dx = e.clientX - sx;
       if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx)) return;
       const fb = wrap.querySelector('#seekFb');
       if (dy < 0 && prevEp) {
@@ -1881,9 +1889,9 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
         showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
       }
     };
-    // Listen ที่ document ใน capture phase — ได้ event แม้ใน fullscreen และไม่ถูก child element กิน
-    document.addEventListener('touchstart', onStart, { passive: true, capture: true, signal: ctrl?.signal });
-    document.addEventListener('touchend', onEnd, { passive: true, capture: true, signal: ctrl?.signal });
+    wrap.addEventListener('pointerdown', onDown, { signal: ctrl?.signal });
+    window.addEventListener('pointerup', onUp, { signal: ctrl?.signal });
+    window.addEventListener('pointercancel', () => { active = false; }, { signal: ctrl?.signal });
   }
 
   if (!nextEp) return;
