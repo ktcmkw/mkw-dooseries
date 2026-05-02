@@ -597,20 +597,6 @@ function skeletonGrid(n = 12) {
   return html;
 }
 
-function isRecentlyNew(d) {
-  // ตรวจ field วันที่หลายชื่อ (DramaBox / Melolo มี schema ไม่เหมือนกัน)
-  const fields = ['shelfTime', 'onShelfTime', 'bookOnShelfTime', 'updateTime', 'lastUpdate', 'publishTime', 'createTime'];
-  for (const f of fields) {
-    const v = d[f];
-    if (!v) continue;
-    const t = new Date(v).getTime();
-    if (isNaN(t)) continue;
-    const age = Date.now() - t;
-    return age >= 0 && age < 7 * 24 * 60 * 60 * 1000;
-  }
-  return false;
-}
-
 function dramaCard(d) {
   const rawId = String(d.series_id || d.bookId || '');
   // ซ่อนซีรีส์ที่ admin ตั้ง hidden ไว้ (admin ยังเห็นจาก backend แต่ frontend filter หมดทุก role)
@@ -632,10 +618,6 @@ function dramaCard(d) {
       ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">SUBTHAI</div>'
       : '';
   const srcBadge = `<div class="absolute top-2 right-2 px-2 py-0.5 ${SOURCE_BADGE_CLS[src] || 'bg-zinc-700'} text-white text-[10px] font-bold rounded shadow">${escapeHtml(SOURCE_LABELS[src] || src.toUpperCase())}</div>`;
-  const isNew = isRecentlyNew(d);
-  const newBadge = isNew
-    ? '<div class="absolute bottom-2 right-2 px-2 py-0.5 bg-gradient-to-r from-emerald-500 to-green-500 text-white text-[10px] font-black rounded-md shadow-lg z-10 ring-1 ring-white/30">NEW</div>'
-    : '';
   return `
     <a href="/detail?bookId=${id}${n ? `&n=${n}` : ''}${srcQ}" class="card cursor-pointer block">
       <div class="relative card-img rounded-lg overflow-hidden bg-zinc-900">
@@ -643,8 +625,7 @@ function dramaCard(d) {
         <div class="absolute inset-0 gradient-fade"></div>
         ${langBadge}
         ${srcBadge}
-        ${newBadge}
-        <div class="absolute bottom-2 left-2 ${isNew ? 'right-16' : 'right-2'}">
+        <div class="absolute bottom-2 left-2 right-2">
           <div class="text-white font-bold text-sm leading-tight glow-text line-clamp-2">${escapeHtml(title)}</div>
           <div class="text-[11px] mt-0.5 glow-text"><span class="text-amber-300 font-bold">🎬 ${n}</span><span class="text-zinc-300"> ตอน${firstGenre ? ' • ' + escapeHtml(firstGenre) : ''}</span></div>
         </div>
