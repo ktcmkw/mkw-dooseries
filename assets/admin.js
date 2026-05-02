@@ -239,15 +239,17 @@ async function renderUsersTab(c) {
 
 // ---------- Locks ----------
 async function renderLocksTab(c) {
-  const [locksRes, fmRes, hbRes] = await Promise.all([
+  const [locksRes, fmRes, rlRes, hbRes] = await Promise.all([
     backendGet('/api/admin/locks'),
     backendGet('/api/admin/freemode'),
+    backendGet('/api/admin/role-limits'),
     backendGet('/api/admin/hidden-books'),
   ]);
   const { locks } = locksRes;
-  const fm = fmRes.freeMode || { enabled: false, message: '', startAt: null, endAt: null, guestEps: 3, userEps: 10 };
-  const fmGuestEps = Number.isFinite(fm.guestEps) ? fm.guestEps : 3;
-  const fmUserEps = Number.isFinite(fm.userEps) ? fm.userEps : 10;
+  const fm = fmRes.freeMode || { enabled: false, message: '', startAt: null, endAt: null };
+  const rl = rlRes.roleLimits || { guestEps: 0, userEps: 10 };
+  const rlGuestEps = Number.isFinite(rl.guestEps) ? rl.guestEps : 0;
+  const rlUserEps = Number.isFinite(rl.userEps) ? rl.userEps : 10;
   const active = !!fmRes.active;
   const hiddenBooks = hbRes.hiddenBooks || {};
   const hbEntries = Object.entries(hiddenBooks);
@@ -278,7 +280,7 @@ async function renderLocksTab(c) {
         <div class="text-2xl">🎁</div>
         <div class="flex-1">
           <h3 class="font-bold">โปรโมชั่น "ดูฟรีทั้งเว็บ"</h3>
-          <p class="text-xs text-zinc-500 mt-0.5">เปิด = ทุกคน (รวม guest) ดูทุกเรื่อง ทุก ep ฟรี + popup โผล่หน้าแรก • ตั้งช่วงเวลาได้ (เว้นว่าง = ตลอดเวลา)</p>
+          <p class="text-xs text-zinc-500 mt-0.5">เปิด = <strong class="text-amber-300">user ที่ login ทุกคนดูฟรีทุกตอน</strong> + popup โผล่หน้าแรก • <strong class="text-red-400">guest ต้อง login ก่อน (ดูไม่ได้แม้ตอนเดียว)</strong> • VIP/admin ดูได้ไม่จำกัด • ตั้งช่วงเวลาได้</p>
         </div>
         <label class="inline-flex items-center cursor-pointer">
           <input type="checkbox" id="fmToggle" class="sr-only peer" ${fm.enabled ? 'checked' : ''}/>
@@ -299,18 +301,6 @@ async function renderLocksTab(c) {
         <label class="text-xs text-zinc-400 mb-1 block">ข้อความบน popup (เว้นว่างเพื่อใช้ค่าเริ่มต้น)</label>
         <textarea id="fmMsg" rows="2" placeholder="เช่น: ฉลองครบรอบ! ดูทุกเรื่องฟรีถึง 31 ธ.ค." class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm">${escapeHtml(fm.message || '')}</textarea>
       </div>
-      <div class="grid sm:grid-cols-2 gap-3 mt-3">
-        <div>
-          <label class="text-xs text-zinc-400 mb-1 block">จำนวนตอนที่ guest (ไม่ login) ดูได้</label>
-          <input id="fmGuestEps" type="number" min="0" max="999" value="${fmGuestEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
-          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้อง login/สมัคร</p>
-        </div>
-        <div>
-          <label class="text-xs text-zinc-400 mb-1 block">จำนวนตอนที่ user (login แล้ว, ไม่ใช่ VIP) ดูได้</label>
-          <input id="fmUserEps" type="number" min="0" max="999" value="${fmUserEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
-          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้องอัปเกรด VIP • VIP/admin ดูได้ทุกตอน</p>
-        </div>
-      </div>
       <div class="flex items-center gap-3 mt-3 flex-wrap">
         <button id="fmSave" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold">บันทึก</button>
         <span class="text-xs ${statusCls}">
@@ -318,6 +308,30 @@ async function renderLocksTab(c) {
           ${fm.setBy ? ` • โดย ${escapeHtml(fm.setBy)} • ${escapeHtml((fm.setAt || '').slice(0, 19).replace('T', ' '))}` : ''}
         </span>
       </div>
+    </div>
+
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-5">
+      <div class="flex items-start gap-3 mb-3">
+        <div class="text-2xl">🎫</div>
+        <div class="flex-1">
+          <h3 class="font-bold">จำกัดจำนวนตอนตาม Role (เมื่อ freeMode ปิด)</h3>
+          <p class="text-xs text-zinc-500 mt-0.5">ใช้งานเฉพาะตอนที่ freeMode ปิดอยู่ • VIP / admin ดูได้ทุกตอนเสมอ • VIP หมดอายุ → กลับเป็น user → อยู่ภายใต้ limit นี้</p>
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-zinc-400 mb-1 block">guest (ไม่ login) ดูได้กี่ตอน</label>
+          <input id="rlGuestEps" type="number" min="0" max="999" value="${rlGuestEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้อง login/สมัคร • ตั้ง 0 = บังคับ login ตั้งแต่ตอนแรก</p>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400 mb-1 block">user (login แล้ว, ไม่ใช่ VIP) ดูได้กี่ตอน</label>
+          <input id="rlUserEps" type="number" min="0" max="999" value="${rlUserEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้องอัปเกรด VIP</p>
+        </div>
+      </div>
+      <button id="rlSave" class="mt-3 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold">บันทึก Role Limits</button>
+      ${rl.setBy ? `<span class="ml-3 text-xs text-zinc-500">โดย ${escapeHtml(rl.setBy)} • ${escapeHtml((rl.setAt || '').slice(0, 19).replace('T', ' '))}</span>` : ''}
     </div>
     <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-5">
       <h3 class="font-bold mb-1">🚫 ซ่อนซีรีส์ทั้งเรื่อง</h3>
@@ -413,11 +427,18 @@ async function renderLocksTab(c) {
     const message = $('#fmMsg').value.trim();
     const startAt = $('#fmStart').value || null;
     const endAt = $('#fmEnd').value || null;
-    const guestEps = parseInt($('#fmGuestEps').value, 10);
-    const userEps = parseInt($('#fmUserEps').value, 10);
-    if (enabled && !confirm('เปิดโหมด "ดูฟรีทั้งเว็บ" — ทุกคน (รวม guest) จะดูทุกเรื่องฟรีในช่วงเวลาที่กำหนด ยืนยัน?')) return;
+    if (enabled && !confirm('เปิดโหมด "ดูฟรีทั้งเว็บ" — user ที่ login ดูฟรีทุกตอน / guest ต้อง login ก่อน (ดูไม่ได้แม้ตอนเดียว) — ยืนยัน?')) return;
     try {
-      await backendPost('/api/admin/freemode', { enabled, message, startAt, endAt, guestEps, userEps });
+      await backendPost('/api/admin/freemode', { enabled, message, startAt, endAt });
+      renderLocksTab(c);
+    } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
+  };
+
+  $('#rlSave').onclick = async () => {
+    const guestEps = parseInt($('#rlGuestEps').value, 10);
+    const userEps = parseInt($('#rlUserEps').value, 10);
+    try {
+      await backendPost('/api/admin/role-limits', { guestEps, userEps });
       renderLocksTab(c);
     } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
   };

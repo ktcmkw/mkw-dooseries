@@ -296,6 +296,27 @@ const publicConfig = {
   },
 };
 
+// คืน icon สำหรับแต่ละ ep ตาม role + freeMode + roleLimits
+// '' = ดูได้, '🔒' = ต้อง login/อัปเกรด VIP, '💰' = ตอน charged (upstream paywall)
+function epLockIcon(i, isCharge, user) {
+  const role = user?.role;
+  if (role === 'admin' || role === 'vip') return '';
+  if (publicConfig.isFreeMode()) {
+    if (!user) return '🔒';
+    return '';
+  }
+  const limits = publicConfig.data?.roleLimits || {};
+  const guestEps = Number.isFinite(limits.guestEps) ? limits.guestEps : 0;
+  const userEps  = Number.isFinite(limits.userEps)  ? limits.userEps  : 10;
+  if (!user) {
+    if (i > guestEps) return '🔒';
+  } else {
+    if (i > userEps) return '🔒';
+  }
+  if (isCharge) return '💰';
+  return '';
+}
+
 function maybeShowPromoPopup() {
   if (!publicConfig.isFreeMode()) return;
   const today = new Date().toISOString().slice(0, 10);
@@ -1032,8 +1053,12 @@ async function initDetailPage() {
     let buttons = '';
     for (let i = 1; i <= count; i++) {
       const ep = episodes.find(e => e.chapterIndex === i);
-      const charge = (!hidePaywallIcon && ep?.isCharge) ? '<span class="absolute top-0.5 right-1 text-[9px]">💰</span>' : '';
-      buttons += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${count}${srcQ}" class="relative px-3 py-2 bg-zinc-800 hover:bg-red-600 hover:text-white rounded text-sm text-center transition-colors">EP ${i}${charge}</a>`;
+      const icon = epLockIcon(i, ep?.isCharge, auth.user);
+      const iconHtml = icon === '🔒'
+        ? '<span class="absolute top-0.5 right-1 text-[10px]">🔒</span>'
+        : (icon === '💰' && !hidePaywallIcon ? '<span class="absolute top-0.5 right-1 text-[9px]">💰</span>' : '');
+      const dimCls = icon === '🔒' ? 'opacity-60' : '';
+      buttons += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${count}${srcQ}" class="relative px-3 py-2 bg-zinc-800 hover:bg-red-600 hover:text-white rounded text-sm text-center transition-colors ${dimCls}">EP ${i}${iconHtml}</a>`;
     }
     chaptersHtml = `<div class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">${buttons}</div>`;
   } else {
@@ -1190,9 +1215,13 @@ async function initPlayPage() {
     let html = '';
     for (let i = 1; i <= total; i++) {
       const e = episodes.find(x => x.chapterIndex === i);
-      const charge = (!hidePaywallIcon && e?.isCharge) ? '<span class="text-[9px] text-amber-400 ml-0.5">💰</span>' : '';
+      const icon = epLockIcon(i, e?.isCharge, u);
+      const iconHtml = icon === '🔒'
+        ? '<span class="text-[9px] ml-0.5">🔒</span>'
+        : (icon === '💰' && !hidePaywallIcon ? '<span class="text-[9px] text-amber-400 ml-0.5">💰</span>' : '');
+      const dimCls = icon === '🔒' && i !== index ? 'opacity-60' : '';
       const cls = i === index ? 'bg-red-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300';
-      html += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${total}${srcQ}" data-idx="${i}" class="${cls} px-3 py-1.5 rounded text-sm font-medium">${i}${charge}</a>`;
+      html += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${total}${srcQ}" data-idx="${i}" class="${cls} ${dimCls} px-3 py-1.5 rounded text-sm font-medium">${i}${iconHtml}</a>`;
     }
     $('#navEp').innerHTML = html;
     $$('#navEp a').forEach(a => a.onclick = ev => {

@@ -59,7 +59,8 @@ const DEFAULT_DATA = {
   ],
   topupHistory: [],
   slipPending: [],
-  freeMode: { enabled: false, message: '', startAt: null, endAt: null, guestEps: 3, userEps: 10 },
+  freeMode: { enabled: false, message: '', startAt: null, endAt: null },
+  roleLimits: { guestEps: 0, userEps: 10 },
   announcement: { enabled: false, text: '', color: 'blue' },  // banner ใต้ header
   maintenance: { enabled: false, message: '' },               // ปิดเว็บชั่วคราว (admin ผ่านได้)
   disableTracking: false,                                      // ปิดการบันทึก lastSeenAt/loginLog ชั่วคราว (ลดภาระ disk write)
@@ -84,6 +85,14 @@ async function ensureMongo() {
 function applyDefaults(data) {
   for (const k of Object.keys(DEFAULT_DATA)) if (!(k in data)) data[k] = DEFAULT_DATA[k];
   if (!data.users.admin) data.users.admin = DEFAULT_DATA.users.admin;
+  // One-time migration: freeMode.{guestEps,userEps} → roleLimits (ถ้าเคยตั้งไว้แต่ยังไม่ย้าย)
+  if (data.freeMode && (data.freeMode.guestEps != null || data.freeMode.userEps != null)) {
+    data.roleLimits = data.roleLimits || {};
+    if (data.roleLimits.guestEps == null && data.freeMode.guestEps != null) data.roleLimits.guestEps = data.freeMode.guestEps;
+    if (data.roleLimits.userEps == null && data.freeMode.userEps != null) data.roleLimits.userEps = data.freeMode.userEps;
+    delete data.freeMode.guestEps;
+    delete data.freeMode.userEps;
+  }
   return data;
 }
 
@@ -376,40 +385,37 @@ function checkAccess(data, user, bookId, index) {
     return { allowed: false, reason: 'hidden' };
   }
 
-  // Free-for-all mode (admin-toggleable promotion) — override ทุกอย่างเมื่ออยู่ในช่วง
-  // - admin / vip: ดูได้ทุกตอน
-  // - user (logged-in): ดูได้แค่ N ตอน (userEps, default 10)
-  // - guest: ดูได้แค่ M ตอน (guestEps, default 3)
+  // admin / vip → ดูได้ทุกอย่างเสมอ (ไม่สน freeMode, role limit, admin lock)
+  if (user?.role === 'admin') return { allowed: true };
+  if (user?.role === 'vip')   return { allowed: true };
+
+  const idx = Number(index);
+
+  // FreeMode ON: user login ดูได้ทุกตอนฟรี / guest ต้อง login
   if (isFreeActive(data)) {
-    if (user?.role === 'admin' || user?.role === 'vip') return { allowed: true, freeMode: true };
-    const fm = data.freeMode || {};
-    const guestEps = Number.isFinite(fm.guestEps) ? fm.guestEps : 3;
-    const userEps = Number.isFinite(fm.userEps) ? fm.userEps : 10;
-    const idx = Number(index);
-    if (!user) {
-      if (idx <= guestEps) return { allowed: true, freeMode: true, guest: true };
-      return { allowed: false, reason: 'need_login', freeMode: true, guestLimit: guestEps };
-    }
-    // role = user
-    if (idx <= userEps) return { allowed: true, freeMode: true };
-    return { allowed: false, reason: 'need_vip', freeMode: true, userLimit: userEps };
+    if (!user) return { allowed: false, reason: 'need_login', freeMode: true };
+    return { allowed: true, freeMode: true };
   }
 
-  // admin-set locks per bookId (list ของ chapterIndex)
-  const adminLocked = (data.locks[bookId]?.episodes || []).includes(Number(index));
+  // FreeMode OFF → เช็ค per-role limit ก่อน (ตั้งค่าแยกใน admin panel)
+  const limits = data.roleLimits || {};
+  const guestEps = Number.isFinite(limits.guestEps) ? limits.guestEps : 0;
+  const userEps  = Number.isFinite(limits.userEps)  ? limits.userEps  : 10;
 
-  // API's isCharge — เราไม่รู้จาก backend — จะเช็คที่ frontend หลัง fetch /allepisode
-  // ในที่นี้ถือว่า server-side lock = adminLocked เป็นหลัก
-  // frontend รับผิดชอบรวม isCharge
+  if (!user) {
+    if (idx > guestEps) return { allowed: false, reason: 'need_login', guestLimit: guestEps };
+  } else {
+    // role === 'user'
+    if (idx > userEps) return { allowed: false, reason: 'need_vip', userLimit: userEps };
+  }
 
+  // ภายใน role limit → ตรวจ admin-set per-book lock
+  const adminLocked = (data.locks[bookId]?.episodes || []).includes(idx);
   if (!adminLocked) return { allowed: true };
 
+  // Locked ep → guest need login / user ใช้เหรียญ หรือ VIP (VIP handled ด้านบนแล้ว)
   if (!user) return { allowed: false, reason: 'need_login' };
-  if (user.role === 'admin') return { allowed: true };
-  if (user.role === 'vip') return { allowed: true };
-
-  // user ธรรมดา
-  const key = `${bookId}:${index}`;
+  const key = `${bookId}:${idx}`;
   if ((user.unlocked || []).includes(key)) return { allowed: true };
   return { allowed: false, reason: 'need_coin', cost: EPISODE_COST, userCoins: user.coins };
 }
@@ -431,6 +437,10 @@ async function handleApi(req, res, pathname, query) {
         message: fm.message || '',
         startAt: fm.startAt || null,
         endAt: fm.endAt || null,
+      },
+      roleLimits: {
+        guestEps: Number.isFinite(data.roleLimits?.guestEps) ? data.roleLimits.guestEps : 0,
+        userEps: Number.isFinite(data.roleLimits?.userEps) ? data.roleLimits.userEps : 10,
       },
       announcement: { enabled: !!an.enabled, text: an.text || '', color: an.color || 'blue' },
       maintenance: { enabled: !!mt.enabled, message: mt.message || '' },
@@ -960,20 +970,36 @@ async function handleApi(req, res, pathname, query) {
     if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
       return badRequest(res, 'วันที่สิ้นสุดต้องอยู่หลังวันที่เริ่ม');
     }
-    const parseEps = (v, def) => {
-      const n = parseInt(v, 10);
-      if (!Number.isFinite(n) || n < 0) return def;
-      return Math.min(n, 999);
-    };
-    const guestEps = parseEps(body.guestEps, 3);
-    const userEps = parseEps(body.userEps, 10);
     data.freeMode = {
-      enabled, message, startAt, endAt, guestEps, userEps,
+      enabled, message, startAt, endAt,
       setBy: user.username,
       setAt: new Date().toISOString(),
     };
     await writeData(data);
     return json(res, 200, { ok: true, freeMode: data.freeMode, active: isFreeActive(data) });
+  }
+
+  // ===== Per-role episode limits (ใช้เมื่อ freeMode OFF) =====
+  if (pathname === '/api/admin/role-limits' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { roleLimits: data.roleLimits || { guestEps: 0, userEps: 10 } });
+  }
+  if (pathname === '/api/admin/role-limits' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const parseEps = (v, def) => {
+      const n = parseInt(v, 10);
+      if (!Number.isFinite(n) || n < 0) return def;
+      return Math.min(n, 999);
+    };
+    data.roleLimits = {
+      guestEps: parseEps(body.guestEps, 0),
+      userEps: parseEps(body.userEps, 10),
+      setBy: user.username,
+      setAt: new Date().toISOString(),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, roleLimits: data.roleLimits });
   }
 
   if (pathname === '/api/admin/giftcards' && req.method === 'GET') {
