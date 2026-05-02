@@ -245,7 +245,9 @@ async function renderLocksTab(c) {
     backendGet('/api/admin/hidden-books'),
   ]);
   const { locks } = locksRes;
-  const fm = fmRes.freeMode || { enabled: false, message: '', startAt: null, endAt: null };
+  const fm = fmRes.freeMode || { enabled: false, message: '', startAt: null, endAt: null, guestEps: 3, userEps: 10 };
+  const fmGuestEps = Number.isFinite(fm.guestEps) ? fm.guestEps : 3;
+  const fmUserEps = Number.isFinite(fm.userEps) ? fm.userEps : 10;
   const active = !!fmRes.active;
   const hiddenBooks = hbRes.hiddenBooks || {};
   const hbEntries = Object.entries(hiddenBooks);
@@ -296,6 +298,18 @@ async function renderLocksTab(c) {
       <div>
         <label class="text-xs text-zinc-400 mb-1 block">ข้อความบน popup (เว้นว่างเพื่อใช้ค่าเริ่มต้น)</label>
         <textarea id="fmMsg" rows="2" placeholder="เช่น: ฉลองครบรอบ! ดูทุกเรื่องฟรีถึง 31 ธ.ค." class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm">${escapeHtml(fm.message || '')}</textarea>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3 mt-3">
+        <div>
+          <label class="text-xs text-zinc-400 mb-1 block">จำนวนตอนที่ guest (ไม่ login) ดูได้</label>
+          <input id="fmGuestEps" type="number" min="0" max="999" value="${fmGuestEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้อง login/สมัคร</p>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400 mb-1 block">จำนวนตอนที่ user (login แล้ว, ไม่ใช่ VIP) ดูได้</label>
+          <input id="fmUserEps" type="number" min="0" max="999" value="${fmUserEps}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <p class="text-[10px] text-zinc-500 mt-1">เกินจำนวนนี้ → ต้องอัปเกรด VIP • VIP/admin ดูได้ทุกตอน</p>
+        </div>
       </div>
       <div class="flex items-center gap-3 mt-3 flex-wrap">
         <button id="fmSave" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold">บันทึก</button>
@@ -399,9 +413,11 @@ async function renderLocksTab(c) {
     const message = $('#fmMsg').value.trim();
     const startAt = $('#fmStart').value || null;
     const endAt = $('#fmEnd').value || null;
+    const guestEps = parseInt($('#fmGuestEps').value, 10);
+    const userEps = parseInt($('#fmUserEps').value, 10);
     if (enabled && !confirm('เปิดโหมด "ดูฟรีทั้งเว็บ" — ทุกคน (รวม guest) จะดูทุกเรื่องฟรีในช่วงเวลาที่กำหนด ยืนยัน?')) return;
     try {
-      await backendPost('/api/admin/freemode', { enabled, message, startAt, endAt });
+      await backendPost('/api/admin/freemode', { enabled, message, startAt, endAt, guestEps, userEps });
       renderLocksTab(c);
     } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
   };

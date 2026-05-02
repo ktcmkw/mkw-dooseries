@@ -59,7 +59,7 @@ const DEFAULT_DATA = {
   ],
   topupHistory: [],
   slipPending: [],
-  freeMode: { enabled: false, message: '', startAt: null, endAt: null },
+  freeMode: { enabled: false, message: '', startAt: null, endAt: null, guestEps: 3, userEps: 10 },
   announcement: { enabled: false, text: '', color: 'blue' },  // banner ใต้ header
   maintenance: { enabled: false, message: '' },               // ปิดเว็บชั่วคราว (admin ผ่านได้)
   disableTracking: false,                                      // ปิดการบันทึก lastSeenAt/loginLog ชั่วคราว (ลดภาระ disk write)
@@ -377,7 +377,23 @@ function checkAccess(data, user, bookId, index) {
   }
 
   // Free-for-all mode (admin-toggleable promotion) — override ทุกอย่างเมื่ออยู่ในช่วง
-  if (isFreeActive(data)) return { allowed: true, freeMode: true };
+  // - admin / vip: ดูได้ทุกตอน
+  // - user (logged-in): ดูได้แค่ N ตอน (userEps, default 10)
+  // - guest: ดูได้แค่ M ตอน (guestEps, default 3)
+  if (isFreeActive(data)) {
+    if (user?.role === 'admin' || user?.role === 'vip') return { allowed: true, freeMode: true };
+    const fm = data.freeMode || {};
+    const guestEps = Number.isFinite(fm.guestEps) ? fm.guestEps : 3;
+    const userEps = Number.isFinite(fm.userEps) ? fm.userEps : 10;
+    const idx = Number(index);
+    if (!user) {
+      if (idx <= guestEps) return { allowed: true, freeMode: true, guest: true };
+      return { allowed: false, reason: 'need_login', freeMode: true, guestLimit: guestEps };
+    }
+    // role = user
+    if (idx <= userEps) return { allowed: true, freeMode: true };
+    return { allowed: false, reason: 'need_vip', freeMode: true, userLimit: userEps };
+  }
 
   // admin-set locks per bookId (list ของ chapterIndex)
   const adminLocked = (data.locks[bookId]?.episodes || []).includes(Number(index));
@@ -944,8 +960,15 @@ async function handleApi(req, res, pathname, query) {
     if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
       return badRequest(res, 'วันที่สิ้นสุดต้องอยู่หลังวันที่เริ่ม');
     }
+    const parseEps = (v, def) => {
+      const n = parseInt(v, 10);
+      if (!Number.isFinite(n) || n < 0) return def;
+      return Math.min(n, 999);
+    };
+    const guestEps = parseEps(body.guestEps, 3);
+    const userEps = parseEps(body.userEps, 10);
     data.freeMode = {
-      enabled, message, startAt, endAt,
+      enabled, message, startAt, endAt, guestEps, userEps,
       setBy: user.username,
       setAt: new Date().toISOString(),
     };
