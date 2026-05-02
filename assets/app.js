@@ -1558,10 +1558,10 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
         <input id="autoNextCb" type="checkbox" ${autoNext ? 'checked' : ''} class="w-4 h-4 accent-red-500"/>
         <span>เล่นตอนถัดไปอัตโนมัติ</span>
       </label>
-      ${playerOpts?.qualities?.length > 1 ? `
+      ${playerOpts?.qualities?.length ? `
         <div class="flex items-center gap-1.5 text-xs">
           <span class="text-zinc-500">คุณภาพ:</span>
-          <select id="qualitySel" class="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-white text-xs font-semibold cursor-pointer hover:border-red-500">
+          <select id="qualitySel" ${playerOpts.qualities.length < 2 ? 'disabled' : ''} class="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-white text-xs font-semibold cursor-pointer hover:border-red-500 disabled:opacity-60 disabled:cursor-default">
             ${playerOpts.qualities.map(q => `<option value="${q.label}" ${q.label === playerOpts.getCurrentQuality().label ? 'selected' : ''}>${q.label}</option>`).join('')}
           </select>
         </div>
