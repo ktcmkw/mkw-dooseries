@@ -2365,7 +2365,7 @@ async function initProfilePage() {
 }
 
 // ============================================================
-// Privacy / Terms — เนื้อหาดัดแปลงจาก seriesjeen.online ให้เข้ากับ MKW Movies
+// 
 // ============================================================
 
 async function initPrivacyPage() {
@@ -2398,7 +2398,7 @@ async function initPrivacyPage() {
       <h2 class="text-xl font-bold mt-8 mb-3">3. การแชร์ข้อมูลกับบุคคลที่สาม</h2>
       <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
         <li><strong class="text-zinc-100">Google:</strong> เฉพาะข้อมูลที่จำเป็นสำหรับ OAuth login (อีเมล + ชื่อโปรไฟล์)</li>
-        <li><strong class="text-zinc-100">ผู้ให้บริการแหล่งซีรีส์ (DramaBox, Melolo ผ่าน seriesjeen.online):</strong> ส่งคำขอแบบไม่ระบุตัวตน — ผู้ให้บริการต้นทางจะไม่ทราบว่าเป็นผู้ใช้คนใดของเรา</li>
+        <li><strong class="text-zinc-100">ผู้ให้บริการแหล่งซีรีส์ :</strong> ส่งคำขอแบบไม่ระบุตัวตน — ผู้ให้บริการต้นทางจะไม่ทราบว่าเป็นผู้ใช้คนใดของเรา</li>
         <li><strong class="text-zinc-100">หน่วยงานราชการ:</strong> เปิดเผยตามที่กฎหมายไทยกำหนดเท่านั้น</li>
       </ul>
       <p class="text-sm text-zinc-300 mt-3"><strong class="text-zinc-100">เราไม่ขายข้อมูลของท่านให้ผู้ใด</strong></p>
@@ -2427,7 +2427,6 @@ async function initPrivacyPage() {
       <p class="text-sm text-zinc-300 leading-relaxed">หากมีคำถามเกี่ยวกับข้อมูลส่วนบุคคลหรือต้องการใช้สิทธิตาม PDPA กรุณาติดต่อ admin ผ่านช่องทางที่ระบุในเว็บไซต์ ทีมงานจะตอบกลับภายใน 30 วัน</p>
 
       <div class="mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-500">
-        <p>เอกสารนี้ดัดแปลงจากนโยบายความเป็นส่วนตัวของ seriesjeen.online เพื่อให้เข้ากับการให้บริการของ ${BRAND}</p>
       </div>
     </article>
   `, 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8 sm:py-12');
@@ -2491,7 +2490,6 @@ async function initTermsPage() {
       <p class="text-sm text-zinc-300 leading-relaxed">ข้อกำหนดนี้อยู่ภายใต้กฎหมายไทย ข้อพิพาทใดๆ ให้ดำเนินการที่ศาลไทยเท่านั้น</p>
 
       <div class="mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-500">
-        <p>เอกสารนี้ดัดแปลงจากข้อกำหนดการใช้งานของ seriesjeen.online เพื่อให้เข้ากับการให้บริการของ ${BRAND}</p>
       </div>
     </article>
   `, 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8 sm:py-12');
