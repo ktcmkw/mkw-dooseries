@@ -1798,6 +1798,9 @@ function showEpChangeConfirm(currentIdx, targetIdx, onConfirm) {
     </div>
   `;
   document.body.appendChild(popup);
+  // ถ้าอยู่ใน fullscreen ต้อง move popup เข้า fullscreen element ไม่งั้นถูกซ่อน
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) fsEl.appendChild(popup);
 
   let closed = false;
   const close = () => {
