@@ -1249,11 +1249,11 @@ async function initPlayPage() {
 
   // 3) Combined check — API's isCharge ก็ถือเป็น "ต้องการ coin/VIP"
   //    ถ้า user เป็น admin/vip → บังคับให้ผ่าน (override isCharge ด้วย)
-  //    ถ้า freeMode ON → ผ่านหมด (override ทุกเงื่อนไข)
+  //    เชื่อ access.allowed จาก backend เป็นหลัก (รวมถึง freeMode/role-limit gating)
   const isFree = access.freeMode || publicConfig.isFreeMode();
   const effectivelyLocked = !isFree && (!access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip'))));
 
-  if ((access.allowed && !effectivelyLocked) || isFree) {
+  if (access.allowed && !effectivelyLocked) {
     // Log history ก่อนเล่น (ต้อง login)
     if (u) {
       backendPost('/api/history/log', {
@@ -1320,7 +1320,7 @@ async function goToEpisode(newIndex, ctx) {
   }
   const isFree = access.freeMode || publicConfig.isFreeMode();
   const effectivelyLocked = !isFree && (!access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip'))));
-  if ((access.allowed && !effectivelyLocked) || isFree) {
+  if (access.allowed && !effectivelyLocked) {
     if (u) {
       backendPost('/api/history/log', {
         bookId, source: src, index: newIndex,
