@@ -92,6 +92,148 @@ async function backendDelete(path) {
   return data;
 }
 
+// ---------- Public site config (freeMode promo ฯลฯ) ----------
+const publicConfig = {
+  data: null,
+  async load() {
+    if (this.data) return this.data;
+    try {
+      const r = await fetch('/api/public-config');
+      if (r.ok) this.data = await r.json();
+    } catch {}
+    if (!this.data) this.data = { freeMode: { enabled: false, message: '' }, announcement: { enabled: false }, maintenance: { enabled: false }, hiddenBooks: [] };
+    return this.data;
+  },
+  isFreeMode() { return !!this.data?.freeMode?.enabled; },
+  freeMessage() { return this.data?.freeMode?.message || ''; },
+  isMaintenance() { return !!this.data?.maintenance?.enabled; },
+  maintenanceMsg() { return this.data?.maintenance?.message || ''; },
+  hiddenBookSet() {
+    if (!this._hbSet) this._hbSet = new Set(this.data?.hiddenBooks || []);
+    return this._hbSet;
+  },
+};
+
+function maybeShowPromoPopup() {
+  if (!publicConfig.isFreeMode()) return;
+  const today = new Date().toISOString().slice(0, 10);
+  if (localStorage.getItem('mkw_promo_dismiss') === today) return;
+  if (document.getElementById('promoPopup')) return;
+
+  const fm = publicConfig.data?.freeMode || {};
+  const customMsg = fm.message || '';
+  const defaultMsg = 'ตอนนี้อยู่ในช่วงโปรโมชั่น <strong>ดูฟรีทั้งแอป</strong> — ทุกเรื่อง ทุกตอน ไม่ต้องใช้เหรียญ ไม่ต้อง VIP';
+  const msg = customMsg ? escapeHtml(customMsg) : defaultMsg;
+
+  // แสดงช่วงเวลา ถ้าตั้งไว้
+  const fmtDT = iso => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return d.toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  const sText = fmtDT(fm.startAt);
+  const eText = fmtDT(fm.endAt);
+  let rangeHtml = '';
+  if (sText || eText) {
+    rangeHtml = `
+      <div class="mt-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-300">
+        <div class="font-bold mb-1">⏰ ช่วงกิจกรรม</div>
+        <div>${sText ? `<span class="text-zinc-400">เริ่ม:</span> ${escapeHtml(sText)}` : '<span class="text-zinc-400">เริ่มแล้ว</span>'}</div>
+        <div>${eText ? `<span class="text-zinc-400">สิ้นสุด:</span> ${escapeHtml(eText)}` : '<span class="text-zinc-400">ไม่มีวันสิ้นสุด</span>'}</div>
+      </div>
+    `;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'promoPopup';
+  overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center p-4';
+  overlay.style.background = 'rgba(0,0,0,0.75)';
+  overlay.style.backdropFilter = 'blur(4px)';
+  overlay.innerHTML = `
+    <div class="bg-gradient-to-br from-zinc-900 to-zinc-950 border-2 border-emerald-500/50 rounded-2xl p-6 max-w-md w-full shadow-2xl" style="animation: slide-up 0.3s ease-out">
+      <div class="text-center mb-4">
+        <div class="text-6xl mb-3">🎉</div>
+        <h3 class="text-2xl font-black text-emerald-400 mb-2">โปรโมชั่นพิเศษ!</h3>
+        <p class="text-sm text-zinc-300 leading-relaxed">${msg}</p>
+        ${rangeHtml}
+      </div>
+      <label class="flex items-center gap-2 text-sm cursor-pointer select-none mb-4 px-3 py-2 bg-zinc-800/50 rounded-lg hover:bg-zinc-800">
+        <input id="promoHideToday" type="checkbox" class="w-4 h-4 accent-emerald-500"/>
+        <span class="text-zinc-300">ไม่แสดงทั้งหมดภายในวันนี้</span>
+      </label>
+      <button id="promoCloseBtn" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white rounded-lg font-bold">ปิด</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => {
+    if (document.getElementById('promoHideToday')?.checked) {
+      localStorage.setItem('mkw_promo_dismiss', today);
+    }
+    overlay.remove();
+  };
+  document.getElementById('promoCloseBtn').onclick = close;
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+}
+
+// ---------- Announcement banner (อยู่ใต้ header) ----------
+function renderAnnouncementBanner() {
+  const an = publicConfig.data?.announcement;
+  if (!an?.enabled || !an.text) return;
+  if (document.getElementById('siteAnnouncement')) return;
+  const colorMap = {
+    blue:    'bg-blue-600/90 border-blue-400',
+    amber:   'bg-amber-500/90 border-amber-300 text-black',
+    red:     'bg-red-600/90 border-red-400',
+    emerald: 'bg-emerald-600/90 border-emerald-400',
+  };
+  const cls = colorMap[an.color] || colorMap.blue;
+  const div = document.createElement('div');
+  div.id = 'siteAnnouncement';
+  div.className = `${cls} border-b text-sm`;
+  // ปลอดภัย: รองรับเฉพาะ <b> และ <a href>
+  const safeHtml = String(an.text)
+    .replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))
+    .replace(/&lt;b&gt;(.*?)&lt;\/b&gt;/g, '<b>$1</b>')
+    .replace(/&lt;a\s+href=&quot;([^&]+?)&quot;&gt;(.*?)&lt;\/a&gt;/g, '<a href="$1" class="underline">$2</a>');
+  div.innerHTML = `<div class="max-w-[1600px] mx-auto px-4 py-2 flex items-center gap-2"><span>📢</span><span class="flex-1">${safeHtml}</span></div>`;
+  document.body.insertBefore(div, document.body.firstChild);
+}
+
+// ---------- Maintenance gate (admin ผ่านได้) ----------
+function maintenanceGate() {
+  if (!publicConfig.isMaintenance()) return false;
+  if (auth.user?.role === 'admin') return false;
+  // อนุญาตเฉพาะหน้า login เพื่อให้ admin เข้ามา manage ได้
+  const allowed = ['/login', '/register'];
+  if (allowed.includes(location.pathname)) return false;
+  document.body.innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-6 bg-black text-white">
+      <div class="max-w-md w-full text-center">
+        <div class="text-7xl mb-4">🚧</div>
+        <h1 class="text-3xl font-black mb-3">กำลังปรับปรุงระบบ</h1>
+        <p class="text-zinc-400 mb-6 leading-relaxed">${escapeHtml(publicConfig.maintenanceMsg() || 'ขออภัยในความไม่สะดวก กลับมาในไม่ช้า')}</p>
+        <a href="/login" class="inline-block px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-sm">Admin login</a>
+      </div>
+    </div>
+  `;
+  return true;
+}
+
+// ---------- Heartbeat (อัปเดต lastSeenAt ทุก 60 วิ) ----------
+let _heartbeatTimer = null;
+function startHeartbeat() {
+  if (_heartbeatTimer || !auth.token) return;
+  // ถ้า admin ปิด tracking → ข้าม heartbeat ทั้งหมด (ลดภาระ server)
+  if (publicConfig.data?.trackingDisabled) return;
+  _heartbeatTimer = setInterval(() => {
+    if (!auth.token) return;
+    if (publicConfig.data?.trackingDisabled) return;  // respect toggle ระหว่าง session
+    fetch('/api/auth/heartbeat', { method: 'POST', headers: auth.headers() }).catch(() => {});
+  }, 60_000);
+}
+
 function pickList(res) {
   if (Array.isArray(res)) return res;
   return res?.items || [];
@@ -242,7 +384,10 @@ function skeletonGrid(n = 12) {
 }
 
 function dramaCard(d) {
-  const id = encodeURIComponent(d.series_id || d.bookId || '');
+  const rawId = String(d.series_id || d.bookId || '');
+  // ซ่อนซีรีส์ที่ admin ตั้ง hidden ไว้ (admin ยังเห็นจาก backend แต่ frontend filter หมดทุก role)
+  if (publicConfig.data && publicConfig.hiddenBookSet().has(rawId) && auth.user?.role !== 'admin') return '';
+  const id = encodeURIComponent(rawId);
   const title = d.title || d.bookName || '';
   const cover = d.cover || d.coverWap || '';
   const n = d.episode_count || d.chapterCount || 0;
@@ -314,13 +459,17 @@ function renderPagination(current, totalPages, basePath, sep) {
 
 async function mountPage(headerKey, mainHtml, mainClass) {
   await auth.refresh();
+  await publicConfig.load();
+  if (maintenanceGate()) return null;  // maintenance mode → replace body + หยุด
   document.body.insertAdjacentHTML('afterbegin', renderHeader(headerKey));
+  renderAnnouncementBanner();
   const main = document.createElement('main');
   main.className = mainClass || 'max-w-[1600px] mx-auto px-4 sm:px-6 py-6 sm:py-8';
   main.innerHTML = mainHtml;
   document.body.appendChild(main);
   document.body.insertAdjacentHTML('beforeend', renderFooter());
   attachHeaderEvents();
+  startHeartbeat();
   return main;
 }
 
@@ -362,7 +511,7 @@ async function initBrowsePage(opts) {
   }
 }
 
-function initHomePage() {
+async function initHomePage() {
   const page = Math.max(1, parseInt(qs('page') || '1', 10));
   const filter = qs('filter') || 'all';
   const size = 50;
@@ -374,12 +523,32 @@ function initHomePage() {
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 
-  return initBrowsePage({
+  await initBrowsePage({
     active: 'home', title: 'หน้าแรก', subtitle: `ซีรีส์ ${active.label} • หน้าละ ${size} เรื่อง (เรียงใหม่→เก่า)`,
     endpoint: active.endpoint(page),
     pagination: { page, size, basePath: `/?filter=${active.key}`, basePathSep: '&' },
     filterBar: { items: filters, active: active.key, basePath: '/' },
   });
+
+  // Mobile search box — โผล่เฉพาะมือถือ (desktop ใช้ nav "ค้นหา" ใน header)
+  const main = document.querySelector('main');
+  const subtitleEl = main?.querySelector('p.text-sm.text-zinc-500');
+  if (subtitleEl && !document.getElementById('homeMobileSearch')) {
+    subtitleEl.insertAdjacentHTML('afterend', `
+      <form id="homeMobileSearch" class="md:hidden flex gap-2 mb-4" role="search">
+        <input id="homeSearchInput" type="search" placeholder="🔍 ค้นหาซีรีส์..." class="flex-1 px-4 py-2.5 bg-zinc-900 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white placeholder-zinc-500 text-sm"/>
+        <button class="px-4 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-semibold">ค้นหา</button>
+      </form>
+    `);
+    document.getElementById('homeMobileSearch').onsubmit = e => {
+      e.preventDefault();
+      const q = document.getElementById('homeSearchInput').value.trim();
+      if (q) location.href = `/search?q=${encodeURIComponent(q)}`;
+    };
+  }
+
+  await publicConfig.load();
+  maybeShowPromoPopup();
 }
 function initVipPage() {
   return initBrowsePage({ active: 'vip', title: 'VIP / ท่านประธาน', subtitle: 'ซีรีส์แนว Billionaire / CEO',
@@ -489,7 +658,11 @@ async function loadCategory(id, cats) {
 
 async function initDetailPage() {
   await auth.refresh();
+  await publicConfig.load();
+  if (maintenanceGate()) return;
   document.body.insertAdjacentHTML('afterbegin', renderHeader(''));
+  renderAnnouncementBanner();
+  startHeartbeat();
   const main = document.createElement('main');
   main.className = 'max-w-[1200px] mx-auto px-6 py-8';
   main.innerHTML = `<div id="content"></div>`;
@@ -499,6 +672,18 @@ async function initDetailPage() {
   const bookId = qs('bookId');
   if (!bookId) {
     $('#content').innerHTML = errorBanner({ message: 'URL ต้องมี ?bookId=xxx' }, { title: 'พารามิเตอร์ไม่ครบ' });
+    return;
+  }
+
+  // Hidden book — admin ยังดูได้, user ทั่วไปเจอ message
+  if (publicConfig.hiddenBookSet().has(bookId) && auth.user?.role !== 'admin') {
+    $('#content').innerHTML = `
+      <div class="text-center py-20">
+        <div class="text-6xl mb-4">🚫</div>
+        <div class="font-bold text-zinc-200 text-xl mb-2">ซีรีส์นี้ไม่พร้อมให้บริการ</div>
+        <div class="text-sm text-zinc-500 mb-6">เรื่องนี้ถูกซ่อนชั่วคราว</div>
+        <a href="/" class="inline-block px-5 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold">กลับหน้าแรก</a>
+      </div>`;
     return;
   }
 
@@ -527,8 +712,8 @@ async function initDetailPage() {
     : (d.tags || []).map(t => `<span class="label-pill">${escapeHtml(t)}</span>`).join('');
   const count = d.chapterCount || 0;
 
-  // ซ่อน 💰 สำหรับ admin/vip
-  const hidePaywallIcon = auth.user && (auth.user.role === 'admin' || auth.user.role === 'vip');
+  // ซ่อน 💰 สำหรับ admin/vip หรือเมื่อเปิดโปรโมชั่นดูฟรีทั้งเว็บ
+  const hidePaywallIcon = publicConfig.isFreeMode() || (auth.user && (auth.user.role === 'admin' || auth.user.role === 'vip'));
   let chaptersHtml = '';
   if (count > 0) {
     let buttons = '';
@@ -611,7 +796,11 @@ async function initDetailPage() {
 
 async function initPlayPage() {
   await auth.refresh();
+  await publicConfig.load();
+  if (maintenanceGate()) return;
   document.body.insertAdjacentHTML('afterbegin', renderHeader(''));
+  renderAnnouncementBanner();
+  startHeartbeat();
   const main = document.createElement('main');
   main.className = 'max-w-[1400px] mx-auto px-6 py-8';
   document.body.appendChild(main);
@@ -680,8 +869,8 @@ async function initPlayPage() {
   const ep = episodes.find(e => e.chapterIndex === index);
   const total = episodes.length || parseInt(qs('n') || '0', 10);
 
-  // Ep navigation — ซ่อน 💰 จาก vip/admin
-  const hidePaywallIcon = u && (u.role === 'admin' || u.role === 'vip');
+  // Ep navigation — ซ่อน 💰 จาก vip/admin หรือเมื่อเปิดโปรโมชั่นดูฟรีทั้งเว็บ
+  const hidePaywallIcon = publicConfig.isFreeMode() || (u && (u.role === 'admin' || u.role === 'vip'));
   if (total > 1) {
     $('#navHeader').classList.remove('hidden');
     let html = '';
@@ -717,9 +906,11 @@ async function initPlayPage() {
 
   // 3) Combined check — API's isCharge ก็ถือเป็น "ต้องการ coin/VIP"
   //    ถ้า user เป็น admin/vip → บังคับให้ผ่าน (override isCharge ด้วย)
-  const effectivelyLocked = !access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip')));
+  //    ถ้า freeMode ON → ผ่านหมด (override ทุกเงื่อนไข)
+  const isFree = access.freeMode || publicConfig.isFreeMode();
+  const effectivelyLocked = !isFree && (!access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip'))));
 
-  if (access.allowed && !effectivelyLocked) {
+  if ((access.allowed && !effectivelyLocked) || isFree) {
     // Log history ก่อนเล่น (ต้อง login)
     if (u) {
       backendPost('/api/history/log', {
@@ -782,8 +973,9 @@ async function goToEpisode(newIndex, ctx) {
     showPlayerError('ตรวจสิทธิ์ไม่ได้', e.message);
     return;
   }
-  const effectivelyLocked = !access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip')));
-  if (access.allowed && !effectivelyLocked) {
+  const isFree = access.freeMode || publicConfig.isFreeMode();
+  const effectivelyLocked = !isFree && (!access.allowed || (ep.isCharge && !(u && (u.role === 'admin' || u.role === 'vip'))));
+  if ((access.allowed && !effectivelyLocked) || isFree) {
     if (u) {
       backendPost('/api/history/log', {
         bookId, index: newIndex,
@@ -809,6 +1001,31 @@ function showPlayerError(title, detail) {
 
 function renderAccessGate(bookId, index, ep, access, user) {
   const reason = access.reason || (ep.isCharge ? 'need_coin' : 'unknown');
+
+  if (reason === 'hidden') {
+    $('#videoWrap').innerHTML = `
+      <div class="w-full h-full flex items-center justify-center text-center p-6">
+        <div>
+          <div class="text-5xl mb-3">🚫</div>
+          <div class="font-bold text-zinc-200 mb-2">ซีรีส์นี้ไม่พร้อมให้บริการ</div>
+          <div class="text-sm text-zinc-400 mb-4">เรื่องนี้ถูกซ่อนชั่วคราว</div>
+          <a href="/" class="inline-block px-5 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold">กลับหน้าแรก</a>
+        </div>
+      </div>`;
+    return;
+  }
+
+  if (reason === 'maintenance') {
+    $('#videoWrap').innerHTML = `
+      <div class="w-full h-full flex items-center justify-center text-center p-6">
+        <div>
+          <div class="text-5xl mb-3">🚧</div>
+          <div class="font-bold text-zinc-200 mb-2">ระบบกำลังปรับปรุง</div>
+          <div class="text-sm text-zinc-400 mb-4">${escapeHtml(publicConfig.maintenanceMsg() || 'กรุณากลับมาภายหลัง')}</div>
+        </div>
+      </div>`;
+    return;
+  }
 
   if (reason === 'need_login' || !user) {
     $('#videoWrap').innerHTML = `
@@ -1129,11 +1346,8 @@ async function initTopupPage() {
       <div id="vipPackages" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8"></div>
 
       <h3 class="font-bold text-lg mb-3">💰 เติม NSV Coin</h3>
-      <div id="packages" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3"></div>
-      <div class="flex gap-2 mb-8 items-center">
-        <span class="text-xs text-zinc-500">โค้ดส่วนลด:</span>
-        <input id="discountCode" type="text" placeholder="เช่น SAVE10" class="flex-1 px-4 py-2 bg-zinc-900 border border-zinc-800 rounded-lg focus:outline-none focus:border-amber-500 text-white placeholder-zinc-500 uppercase text-sm"/>
-      </div>
+      <p class="text-xs text-zinc-500 mb-3">เลือกจำนวนที่ต้องการเติม → ระบบจะกรอกยอดในช่องสลิปให้ → โอนเงินแล้วแนบสลิปด้านล่าง</p>
+      <div id="packages" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8"></div>
 
       <h3 class="font-bold text-lg mb-3">📷 อัพโหลดสลิป (admin ตรวจสอบก่อนเติม)</h3>
       <p class="text-xs text-zinc-500 mb-3">📌 ระบบ verify QR code อัตโนมัติยังไม่เปิดใช้งาน — admin จะตรวจสลิปและเติมเหรียญให้ภายหลัง</p>
@@ -1195,29 +1409,25 @@ async function initTopupPage() {
     }
   });
 
-  // Topup packages
+  // Topup packages — เลือก = pre-fill ช่อง amount ใน slip form (ไม่เติม coin ตรงๆ)
   $('#packages').innerHTML = pkgs.map(p => `
-    <button data-id="${p.id}" class="pkg-btn bg-zinc-900 hover:bg-zinc-800 border-2 border-zinc-800 hover:border-red-500 rounded-xl p-4 text-left transition-all">
+    <button data-id="${p.id}" data-price="${p.price}" data-coins="${p.coins}" class="pkg-btn bg-zinc-900 hover:bg-zinc-800 border-2 border-zinc-800 hover:border-amber-500 rounded-xl p-4 text-left transition-all">
       <div class="text-xs text-zinc-500 mb-1">${escapeHtml(p.label || '')}</div>
       <div class="text-2xl font-black text-amber-400 mb-1">${p.coins.toLocaleString()}</div>
       <div class="text-xs text-zinc-400">NSV Coin</div>
       <div class="mt-2 pt-2 border-t border-zinc-800 text-sm font-bold">฿${p.price.toLocaleString()}</div>
     </button>
   `).join('');
-  $$('.pkg-btn').forEach(b => b.onclick = async () => {
-    const id = b.dataset.id;
-    const discountCode = $('#discountCode').value.trim().toUpperCase();
-    b.disabled = true;
-    const origHtml = b.innerHTML;
-    b.innerHTML = '<div class="text-center text-sm">กำลังชำระเงิน...</div>';
-    try {
-      const r = await backendPost('/api/user/topup', { packageId: id, discountCode: discountCode || undefined });
-      $('#msg').innerHTML = `<div class="info-banner rounded-lg p-4"><div class="font-bold mb-1">✅ เติมเหรียญสำเร็จ</div><div class="text-sm">+${r.coinsAdded.toLocaleString()} NSV Coin (ชำระ ฿${r.pricePaid.toLocaleString()}) • ยอดรวม ${r.newBalance.toLocaleString()} NSV</div></div>`;
-      setTimeout(() => location.reload(), 1500);
-    } catch (e) {
-      $('#msg').innerHTML = `<div class="error-banner rounded-lg p-3 text-sm">${escapeHtml(e.message)}</div>`;
-      b.disabled = false; b.innerHTML = origHtml;
-    }
+  $$('.pkg-btn').forEach(b => b.onclick = () => {
+    $$('.pkg-btn').forEach(x => x.classList.remove('border-amber-500', 'bg-amber-500/10'));
+    b.classList.add('border-amber-500', 'bg-amber-500/10');
+    const price = parseInt(b.dataset.price, 10);
+    const coins = parseInt(b.dataset.coins, 10);
+    const amt = $('#slipAmount');
+    amt.value = price;
+    $('#slipNote').value = `เติม ${coins.toLocaleString()} NSV Coin`;
+    document.getElementById('slipForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    amt.focus();
   });
 
   // Slip upload

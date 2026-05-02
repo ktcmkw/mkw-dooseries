@@ -11,8 +11,12 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 const ROOT = __dirname;
 const DATA_FILE = path.join(ROOT, 'data.json');
 
-const SERIESJEEN_TOKEN = process.env.SERIESJEEN_TOKEN || 'seriesjeen_e6d16e34f67b98a248378bd779937f0e680626c685f4a964';
+const SERIESJEEN_TOKEN = process.env.SERIESJEEN_TOKEN || '';
 const SERIESJEEN_HOST  = 'api.seriesjeen.online';
+
+if (!SERIESJEEN_TOKEN) {
+  console.warn('⚠️  SERIESJEEN_TOKEN env ไม่ได้ตั้ง — /proxy/* จะไม่ทำงาน');
+}
 
 const EPISODE_COST = 50;  // NSV Coin per locked episode
 
@@ -55,6 +59,12 @@ const DEFAULT_DATA = {
   ],
   topupHistory: [],
   slipPending: [],
+  freeMode: { enabled: false, message: '', startAt: null, endAt: null },
+  announcement: { enabled: false, text: '', color: 'blue' },  // banner ใต้ header
+  maintenance: { enabled: false, message: '' },               // ปิดเว็บชั่วคราว (admin ผ่านได้)
+  disableTracking: false,                                      // ปิดการบันทึก lastSeenAt/loginLog ชั่วคราว (ลดภาระ disk write)
+  hiddenBooks: {},                                            // bookId → { hiddenBy, hiddenAt, reason, bookName }
+  loginLog: [],                                               // [{ username, loginAt, logoutAt, durationMs }] max 1000
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -145,16 +155,65 @@ async function checkVipExpiry(u, data) {
   }
 }
 
+// freeMode active ตอนนี้ไหม — ต้อง enabled=true และอยู่ในช่วง start/end (ถ้าตั้งไว้)
+function isFreeActive(data) {
+  const fm = data.freeMode;
+  if (!fm?.enabled) return false;
+  const now = Date.now();
+  if (fm.startAt) {
+    const s = new Date(fm.startAt).getTime();
+    if (!isNaN(s) && now < s) return false;
+  }
+  if (fm.endAt) {
+    const e = new Date(fm.endAt).getTime();
+    if (!isNaN(e) && now > e) return false;
+  }
+  return true;
+}
+
 async function getAuthUser(req, data) {
   const auth = req.headers['authorization'] || '';
   const m = auth.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
-  const username = data.sessions[m[1]];
-  if (!username) return null;
+  const sess = data.sessions[m[1]];
+  if (!sess) return null;
+  // Backwards compat: session อาจเป็น string (username) หรือ object {username, loginAt, lastSeenAt}
+  const username = typeof sess === 'string' ? sess : sess.username;
   const u = data.users[username];
   if (!u) return null;
+  // อัปเดต lastSeenAt (ถ้าเป็น object) — เลี่ยง writeData ทุก request: update เฉพาะเมื่อห่างเกิน 60 วิ
+  // ถ้า admin เปิด disableTracking → ข้ามทั้งหมดเพื่อลดภาระ disk write
+  if (typeof sess === 'object' && sess.username && !data.disableTracking) {
+    const now = Date.now();
+    if (!sess.lastSeenAt || now - new Date(sess.lastSeenAt).getTime() > 60000) {
+      sess.lastSeenAt = new Date(now).toISOString();
+      writeData(data).catch(() => {});
+    }
+  }
   await checkVipExpiry(u, data);
   return { username, ...u };
+}
+
+// ปิด session + push ไป loginLog (keep ≤ 1000 records)
+function closeSession(data, token, reason) {
+  const sess = data.sessions[token];
+  if (!sess) return;
+  // ถ้า tracking ถูกปิด → ไม่ push ไป loginLog (ลดการเขียน)
+  if (typeof sess === 'object' && sess.loginAt && !data.disableTracking) {
+    const logoutAt = new Date().toISOString();
+    const durationMs = Date.now() - new Date(sess.loginAt).getTime();
+    data.loginLog = data.loginLog || [];
+    data.loginLog.push({
+      username: sess.username,
+      loginAt: sess.loginAt,
+      lastSeenAt: sess.lastSeenAt || sess.loginAt,
+      logoutAt,
+      durationMs,
+      reason: reason || 'logout',
+    });
+    if (data.loginLog.length > 1000) data.loginLog = data.loginLog.slice(-1000);
+  }
+  delete data.sessions[token];
 }
 
 function publicUser(u) {
@@ -171,6 +230,65 @@ function publicUser(u) {
 
 function randomToken() {
   return crypto.randomBytes(24).toString('hex');
+}
+
+// ---------- Password hashing (scrypt — Node native, no deps) ----------
+// รูปแบบที่เก็บ: "scrypt$<saltHex>$<hashHex>"
+// รองรับ migration: ถ้าเจอ plain text → verify โดย === แล้ว auto-rehash ครั้งหน้าที่ login
+function hashPassword(plain) {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(String(plain), salt, 64);
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+}
+function verifyPassword(plain, stored) {
+  if (!stored) return false;
+  if (typeof stored === 'string' && stored.startsWith('scrypt$')) {
+    const [, saltHex, hashHex] = stored.split('$');
+    if (!saltHex || !hashHex) return false;
+    try {
+      const salt = Buffer.from(saltHex, 'hex');
+      const expected = Buffer.from(hashHex, 'hex');
+      const got = crypto.scryptSync(String(plain), salt, expected.length);
+      return crypto.timingSafeEqual(got, expected);
+    } catch { return false; }
+  }
+  // Legacy plain text — เทียบตรง (จะถูก auto-migrate ตอน login สำเร็จ)
+  return String(plain) === String(stored);
+}
+function isHashed(stored) {
+  return typeof stored === 'string' && stored.startsWith('scrypt$');
+}
+
+// ---------- Rate limiting (in-memory; reset ทุกๆ window) ----------
+const rateLimitBuckets = new Map();  // key → { count, resetAt }
+function rateLimit(key, max, windowMs) {
+  const now = Date.now();
+  let b = rateLimitBuckets.get(key);
+  if (!b || now > b.resetAt) { b = { count: 0, resetAt: now + windowMs }; rateLimitBuckets.set(key, b); }
+  b.count++;
+  return { ok: b.count <= max, retryAfterSec: Math.ceil((b.resetAt - now) / 1000), remaining: Math.max(0, max - b.count) };
+}
+function clientIp(req) {
+  const xf = req.headers['x-forwarded-for'];
+  if (xf) return String(xf).split(',')[0].trim();
+  return req.socket?.remoteAddress || 'unknown';
+}
+// GC bucket map ทุก 5 นาที (กัน memory leak)
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of rateLimitBuckets) if (now > b.resetAt) rateLimitBuckets.delete(k);
+}, 5 * 60 * 1000).unref();
+
+// ---------- Audit log (admin action history, max 500) ----------
+function audit(data, user, action, details) {
+  data.auditLog = data.auditLog || [];
+  data.auditLog.push({
+    at: new Date().toISOString(),
+    by: user?.username || 'anonymous',
+    action,
+    details: details || null,
+  });
+  if (data.auditLog.length > 500) data.auditLog = data.auditLog.slice(-500);
 }
 
 // ---------- Static ----------
@@ -248,6 +366,19 @@ function httpsGetJson(url, bearer) {
 // ---------- Access control ----------
 // คืน {allowed, reason, cost}
 function checkAccess(data, user, bookId, index) {
+  // Maintenance mode — ปิดทั้งเว็บ (admin ยังดูได้)
+  if (data.maintenance?.enabled && user?.role !== 'admin') {
+    return { allowed: false, reason: 'maintenance' };
+  }
+
+  // Hidden book — admin ซ่อนทั้งเรื่อง (admin ยังดูได้)
+  if (data.hiddenBooks?.[bookId] && user?.role !== 'admin') {
+    return { allowed: false, reason: 'hidden' };
+  }
+
+  // Free-for-all mode (admin-toggleable promotion) — override ทุกอย่างเมื่ออยู่ในช่วง
+  if (isFreeActive(data)) return { allowed: true, freeMode: true };
+
   // admin-set locks per bookId (list ของ chapterIndex)
   const adminLocked = (data.locks[bookId]?.episodes || []).includes(Number(index));
 
@@ -272,6 +403,26 @@ async function handleApi(req, res, pathname, query) {
   const data = await readData();
   const user = await getAuthUser(req, data);
 
+  // ===== Public config (no auth) =====
+  if (req.method === 'GET' && pathname === '/api/public-config') {
+    const fm = data.freeMode || {};
+    const an = data.announcement || {};
+    const mt = data.maintenance || {};
+    return json(res, 200, {
+      freeMode: {
+        enabled: isFreeActive(data),
+        configured: !!fm.enabled,
+        message: fm.message || '',
+        startAt: fm.startAt || null,
+        endAt: fm.endAt || null,
+      },
+      announcement: { enabled: !!an.enabled, text: an.text || '', color: an.color || 'blue' },
+      maintenance: { enabled: !!mt.enabled, message: mt.message || '' },
+      hiddenBooks: Object.keys(data.hiddenBooks || {}),
+      trackingDisabled: !!data.disableTracking,
+    });
+  }
+
   // ===== Auth =====
   if (req.method === 'POST' && pathname === '/api/auth/register') {
     const body = await readBody(req);
@@ -282,7 +433,8 @@ async function handleApi(req, res, pathname, query) {
     if (data.users[username]) return badRequest(res, 'username นี้ถูกใช้แล้ว');
     data.users[username] = { password, role: 'user', coins: 0, unlocked: [], created: new Date().toISOString().slice(0, 10) };
     const token = randomToken();
-    data.sessions[token] = username;
+    const nowIso = new Date().toISOString();
+    data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
     await writeData(data);
     return json(res, 200, { token, user: publicUser({ username, ...data.users[username] }) });
   }
@@ -294,7 +446,8 @@ async function handleApi(req, res, pathname, query) {
     const u = data.users[username];
     if (!u || u.password !== password) return unauthorized(res, 'username หรือ password ผิด');
     const token = randomToken();
-    data.sessions[token] = username;
+    const nowIso = new Date().toISOString();
+    data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
     await writeData(data);
     return json(res, 200, { token, user: publicUser({ username, ...u }) });
   }
@@ -302,7 +455,14 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
     const auth = req.headers['authorization'] || '';
     const m = auth.match(/^Bearer\s+(\S+)$/);
-    if (m && data.sessions[m[1]]) { delete data.sessions[m[1]]; await writeData(data); }
+    if (m && data.sessions[m[1]]) { closeSession(data, m[1], 'logout'); await writeData(data); }
+    return json(res, 200, { ok: true });
+  }
+
+  // Heartbeat — ping ทุก 60 วิจากฝั่ง user เพื่ออัปเดต lastSeenAt (สำหรับ stat "time on site")
+  if (req.method === 'POST' && pathname === '/api/auth/heartbeat') {
+    if (!user) return unauthorized(res);
+    // getAuthUser อัปเดต lastSeenAt ให้แล้ว — แค่คืน ok
     return json(res, 200, { ok: true });
   }
 
@@ -349,7 +509,8 @@ async function handleApi(req, res, pathname, query) {
         };
       }
       const token = randomToken();
-      data.sessions[token] = username;
+      const nowIso = new Date().toISOString();
+      data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
       await writeData(data);
       // ส่ง HTML ที่ set token ใน localStorage แล้วเด้งกลับหน้าแรก
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -375,8 +536,9 @@ async function handleApi(req, res, pathname, query) {
     u.password = newPassword;
     // ลบ session อื่นทั้งหมด ยกเว้น token ปัจจุบัน → บังคับ logout จากเครื่องอื่น
     const currentToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-    for (const [tok, uname] of Object.entries(data.sessions)) {
-      if (uname === user.username && tok !== currentToken) delete data.sessions[tok];
+    for (const [tok, sess] of Object.entries(data.sessions)) {
+      const uname = typeof sess === 'string' ? sess : sess.username;
+      if (uname === user.username && tok !== currentToken) closeSession(data, tok, 'password-change');
     }
     await writeData(data);
     return json(res, 200, { ok: true });
@@ -506,7 +668,31 @@ async function handleApi(req, res, pathname, query) {
 
   if (pathname === '/api/admin/users' && req.method === 'GET') {
     if (!requireAdmin()) return;
-    const list = Object.entries(data.users).map(([username, u]) => ({ username, role: u.role, coins: u.coins, unlocked: (u.unlocked || []).length, created: u.created }));
+    // Aggregate last login + last seen จาก sessions (active) + loginLog (historical)
+    const perUser = {};
+    for (const sess of Object.values(data.sessions)) {
+      if (typeof sess !== 'object' || !sess.username) continue;
+      const u = perUser[sess.username] = perUser[sess.username] || { active: 0 };
+      u.active++;
+      if (!u.lastSeenAt || sess.lastSeenAt > u.lastSeenAt) u.lastSeenAt = sess.lastSeenAt;
+      if (!u.lastLoginAt || sess.loginAt > u.lastLoginAt) u.lastLoginAt = sess.loginAt;
+    }
+    for (const entry of (data.loginLog || [])) {
+      const u = perUser[entry.username] = perUser[entry.username] || { active: 0 };
+      if (!u.lastLoginAt || entry.loginAt > u.lastLoginAt) u.lastLoginAt = entry.loginAt;
+      if (!u.lastSeenAt || (entry.lastSeenAt && entry.lastSeenAt > u.lastSeenAt)) u.lastSeenAt = entry.lastSeenAt;
+    }
+    const list = Object.entries(data.users).map(([username, u]) => ({
+      username, role: u.role, coins: u.coins,
+      unlocked: (u.unlocked || []).length,
+      historyCount: (u.history || []).length,
+      created: u.created,
+      vipExpires: u.vipExpires || null,
+      activeSessions: perUser[username]?.active || 0,
+      lastLoginAt: perUser[username]?.lastLoginAt || null,
+      lastSeenAt: perUser[username]?.lastSeenAt || null,
+      googleEmail: u.googleEmail || null,
+    }));
     return json(res, 200, { users: list });
   }
 
@@ -542,7 +728,180 @@ async function handleApi(req, res, pathname, query) {
     if (target === 'admin') return badRequest(res, 'ลบ admin ไม่ได้');
     if (!data.users[target]) return notFound(res);
     delete data.users[target];
-    for (const [tok, uname] of Object.entries(data.sessions)) if (uname === target) delete data.sessions[tok];
+    for (const [tok, sess] of Object.entries(data.sessions)) {
+      const uname = typeof sess === 'string' ? sess : sess.username;
+      if (uname === target) delete data.sessions[tok];
+    }
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  const mResetPw = pathname.match(/^\/api\/admin\/user\/([^/]+)\/reset-password$/);
+  if (mResetPw && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const newPassword = String(body.newPassword || '').trim();
+    if (newPassword.length < 3) return badRequest(res, 'รหัสผ่านใหม่สั้นเกินไป (ขั้นต่ำ 3 ตัว)');
+    const target = decodeURIComponent(mResetPw[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    data.users[target].password = newPassword;
+    // Force logout ทุก session ของ user คนนี้
+    for (const [tok, sess] of Object.entries(data.sessions)) {
+      const uname = typeof sess === 'string' ? sess : sess.username;
+      if (uname === target) closeSession(data, tok, 'admin-reset-password');
+    }
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  const mVipExp = pathname.match(/^\/api\/admin\/user\/([^/]+)\/vip-expires$/);
+  if (mVipExp && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const target = decodeURIComponent(mVipExp[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    const u = data.users[target];
+    if (body.vipExpires === null || body.vipExpires === '') {
+      // ยกเลิก VIP
+      u.vipExpires = null;
+      if (u.role === 'vip') u.role = 'user';
+    } else {
+      const t = new Date(body.vipExpires).getTime();
+      if (isNaN(t)) return badRequest(res, 'รูปแบบวันที่ไม่ถูกต้อง');
+      u.vipExpires = t;
+      if (u.role === 'user') u.role = 'vip';
+    }
+    await writeData(data);
+    return json(res, 200, { ok: true, role: u.role, vipExpires: u.vipExpires });
+  }
+
+  const mForceLogout = pathname.match(/^\/api\/admin\/user\/([^/]+)\/force-logout$/);
+  if (mForceLogout && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const target = decodeURIComponent(mForceLogout[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    let count = 0;
+    for (const [tok, sess] of Object.entries(data.sessions)) {
+      const uname = typeof sess === 'string' ? sess : sess.username;
+      if (uname === target) { closeSession(data, tok, 'admin-force-logout'); count++; }
+    }
+    await writeData(data);
+    return json(res, 200, { ok: true, closed: count });
+  }
+
+  const mUserHist = pathname.match(/^\/api\/admin\/user\/([^/]+)\/history$/);
+  if (mUserHist && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const target = decodeURIComponent(mUserHist[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    return json(res, 200, { history: data.users[target].history || [] });
+  }
+
+  // ===== Hidden books (ซ่อนทั้งเรื่อง) =====
+  if (pathname === '/api/admin/hidden-books' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { hiddenBooks: data.hiddenBooks || {} });
+  }
+  if (pathname === '/api/admin/hidden-books' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const bookId = String(body.bookId || '').trim();
+    if (!bookId) return badRequest(res, 'ต้องมี bookId');
+    data.hiddenBooks = data.hiddenBooks || {};
+    data.hiddenBooks[bookId] = {
+      bookName: String(body.bookName || '').slice(0, 200),
+      reason: String(body.reason || '').slice(0, 300),
+      hiddenBy: user.username,
+      hiddenAt: new Date().toISOString(),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  const mHide = pathname.match(/^\/api\/admin\/hidden-books\/([^/]+)$/);
+  if (mHide && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const bookId = decodeURIComponent(mHide[1]);
+    if (!data.hiddenBooks?.[bookId]) return notFound(res);
+    delete data.hiddenBooks[bookId];
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  // ===== Announcement banner =====
+  if (pathname === '/api/admin/announcement' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { announcement: data.announcement || { enabled: false, text: '', color: 'blue' } });
+  }
+  if (pathname === '/api/admin/announcement' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const color = ['blue', 'amber', 'red', 'emerald'].includes(body.color) ? body.color : 'blue';
+    data.announcement = {
+      enabled: !!body.enabled,
+      text: String(body.text || '').slice(0, 500),
+      color,
+      setBy: user.username,
+      setAt: new Date().toISOString(),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, announcement: data.announcement });
+  }
+
+  // ===== Maintenance mode =====
+  if (pathname === '/api/admin/maintenance' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { maintenance: data.maintenance || { enabled: false, message: '' } });
+  }
+  if (pathname === '/api/admin/maintenance' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    data.maintenance = {
+      enabled: !!body.enabled,
+      message: String(body.message || '').slice(0, 500),
+      setBy: user.username,
+      setAt: new Date().toISOString(),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, maintenance: data.maintenance });
+  }
+
+  if (pathname === '/api/admin/tracking' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { disableTracking: !!data.disableTracking });
+  }
+  if (pathname === '/api/admin/tracking' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    data.disableTracking = !!body.disableTracking;
+    await writeData(data);
+    return json(res, 200, { ok: true, disableTracking: data.disableTracking });
+  }
+
+  // ===== Login log (active sessions + historical) =====
+  if (pathname === '/api/admin/login-log' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const now = Date.now();
+    const active = [];
+    for (const [tok, sess] of Object.entries(data.sessions)) {
+      if (typeof sess !== 'object' || !sess.username) continue;
+      const loginAtMs = new Date(sess.loginAt).getTime();
+      const lastSeenMs = new Date(sess.lastSeenAt || sess.loginAt).getTime();
+      active.push({
+        username: sess.username,
+        loginAt: sess.loginAt,
+        lastSeenAt: sess.lastSeenAt || sess.loginAt,
+        durationMs: (isNaN(lastSeenMs) ? now : lastSeenMs) - (isNaN(loginAtMs) ? now : loginAtMs),
+        tokenPreview: tok.slice(0, 8) + '…',
+        active: true,
+      });
+    }
+    active.sort((a, b) => (b.lastSeenAt || '').localeCompare(a.lastSeenAt || ''));
+    const historical = (data.loginLog || []).slice().reverse();
+    return json(res, 200, { active, historical });
+  }
+  if (pathname === '/api/admin/login-log' && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    data.loginLog = [];
     await writeData(data);
     return json(res, 200, { ok: true });
   }
@@ -561,6 +920,37 @@ async function handleApi(req, res, pathname, query) {
     else data.locks[bookId] = { episodes: eps, setBy: user.username, setAt: new Date().toISOString() };
     await writeData(data);
     return json(res, 200, { ok: true, locks: data.locks[bookId] || null });
+  }
+
+  if (pathname === '/api/admin/freemode' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, {
+      freeMode: data.freeMode || { enabled: false, message: '', startAt: null, endAt: null },
+      active: isFreeActive(data),
+    });
+  }
+  if (pathname === '/api/admin/freemode' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const enabled = !!body.enabled;
+    const message = typeof body.message === 'string' ? body.message.slice(0, 500) : '';
+    const parseDate = v => {
+      if (!v) return null;
+      const t = new Date(v).getTime();
+      return isNaN(t) ? null : new Date(t).toISOString();
+    };
+    const startAt = parseDate(body.startAt);
+    const endAt = parseDate(body.endAt);
+    if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
+      return badRequest(res, 'วันที่สิ้นสุดต้องอยู่หลังวันที่เริ่ม');
+    }
+    data.freeMode = {
+      enabled, message, startAt, endAt,
+      setBy: user.username,
+      setAt: new Date().toISOString(),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, freeMode: data.freeMode, active: isFreeActive(data) });
   }
 
   if (pathname === '/api/admin/giftcards' && req.method === 'GET') {

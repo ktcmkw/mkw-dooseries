@@ -1,0 +1,100 @@
+{
+  "users": {
+    "admin": {
+      "password": "admin",
+      "role": "admin",
+      "coins": 9999999,
+      "unlocked": [],
+      "created": "2026-05-01",
+      "history": [
+        {
+          "bookId": "42000008741",
+          "index": 2,
+          "bookName": "ภารกิจจีบหนุ่มครอบจักรวาล(พากย์ไทย)",
+          "cover": "https://hwztchapter.dramaboxdb.com/data/cppartner/4x2/42x0/420x0/42000008741/42000008741.jpg?t=1774849099160",
+          "at": "2026-05-01T15:16:15.714Z"
+        }
+      ]
+    }
+  },
+  "sessions": {
+    "26636d57a91d22566fd409664ea819a4f739113f1c94ef8e": "admin",
+    "9d61b41b822d0acd5fecaa55932d5cae4aeb0014e1748efc": "admin",
+    "b47d8d16dc40abe0b643bc861e47306971d347be42bd9b6e": "admin"
+  },
+  "locks": {},
+  "giftcards": {},
+  "discounts": {
+    "SAVE50": {
+      "percent": 50,
+      "active": true,
+      "createdBy": "admin",
+      "createdAt": "2026-05-01T14:44:09.938Z"
+    }
+  },
+  "topupPackages": [
+    {
+      "id": "p1",
+      "coins": 100,
+      "price": 100,
+      "label": "เริ่มต้น"
+    },
+    {
+      "id": "p2",
+      "coins": 500,
+      "price": 450,
+      "label": "คุ้มค่า"
+    },
+    {
+      "id": "p3",
+      "coins": 1000,
+      "price": 850,
+      "label": "ยอดนิยม"
+    },
+    {
+      "id": "p4",
+      "coins": 5000,
+      "price": 4000,
+      "label": "เหมาดู"
+    }
+  ],
+  "topupHistory": [
+    {
+      "username": "test",
+      "packageId": "p1",
+      "coins": 100,
+      "pricePaid": 100,
+      "discount": null,
+      "at": "2026-05-01T13:29:02.217Z"
+    },
+    {
+      "username": "test",
+      "packageId": "p4",
+      "coins": 5000,
+      "pricePaid": 4000,
+      "discount": null,
+      "at": "2026-05-01T13:34:57.843Z"
+    }
+  ],
+  "vipPackages": [
+    {
+      "id": "vip1",
+      "days": 1,
+      "coins": 100,
+      "label": "VIP 1 วัน"
+    },
+    {
+      "id": "vip7",
+      "days": 7,
+      "coins": 500,
+      "label": "VIP 7 วัน"
+    },
+    {
+      "id": "vip30",
+      "days": 30,
+      "coins": 1500,
+      "label": "VIP 30 วัน"
+    }
+  ],
+  "slipPending": []
+}
