@@ -1585,29 +1585,41 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
   if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
   if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
 
-  // Swipe gesture (TikTok-style) — ขึ้น=ep ถัดไป / ลง=ep ก่อน → แสดง popup ยืนยัน (video เล่นต่อปกติ)
+  // Swipe gesture — ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → แสดง popup ยืนยัน (video เล่นต่อปกติ)
   const wrap = $('#videoWrap');
-  if (wrap && (nextEp || prevEp)) {
+  if ((nextEp || prevEp)) {
     let sy = 0, sx = 0, st = 0;
-    wrap.addEventListener('touchstart', e => {
+    const onStart = e => {
       if (e.touches.length !== 1) { st = 0; return; }
       const t = e.touches[0];
       sy = t.clientY; sx = t.clientX; st = Date.now();
-    }, { passive: true, signal: ctrl?.signal });
-    wrap.addEventListener('touchend', e => {
+    };
+    const onEnd = e => {
       if (!st || e.changedTouches.length !== 1) return;
       const t = e.changedTouches[0];
       const dy = t.clientY - sy;
       const dx = t.clientX - sx;
       const dt = Date.now() - st;
       st = 0;
-      if (dt > 600 || Math.abs(dy) < 60 || Math.abs(dy) < Math.abs(dx) * 1.5) return;
-      if (dy < 0 && nextEp) {
-        showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
-      } else if (dy > 0 && prevEp) {
+      if (dt > 700 || Math.abs(dy) < 50 || Math.abs(dy) < Math.abs(dx) * 1.2) return;
+      if (dy < 0 && prevEp) {
+        // swipe ขึ้น → ย้อนกลับ ep ก่อน
         showEpChangeConfirm(ep.chapterIndex, prevEp.chapterIndex, () => goToEpisode(prevEp.chapterIndex, ctx));
+      } else if (dy > 0 && nextEp) {
+        // swipe ลง → ไป ep ถัดไป
+        showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
       }
-    }, { passive: true, signal: ctrl?.signal });
+    };
+    // ผูกที่ทั้ง wrap และ video — กันกรณี native controls กิน event
+    const opts = { passive: true, signal: ctrl?.signal };
+    if (wrap) {
+      wrap.addEventListener('touchstart', onStart, opts);
+      wrap.addEventListener('touchend', onEnd, opts);
+    }
+    if (video) {
+      video.addEventListener('touchstart', onStart, opts);
+      video.addEventListener('touchend', onEnd, opts);
+    }
   }
 
   if (!nextEp) return;

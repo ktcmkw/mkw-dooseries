@@ -8,6 +8,30 @@
       "created": "2026-05-01",
       "history": [
         {
+          "bookId": "7537675084207492112",
+          "index": 1,
+          "bookName": "รักแท้ ดาวมหาลัย",
+          "cover": "https://wsrv.nl/?output=jpg&url=ssl%3Ap16-novel-sg.ibyteimg.com%2Fnovel-images-sg%2Fc8f5d5e5f7676dde701de6e5fc0cc606~tplv-shrink%3A640%3A0.heic",
+          "source": "melolo",
+          "at": "2026-05-02T15:57:18.023Z"
+        },
+        {
+          "bookId": "42000009440",
+          "index": 1,
+          "bookName": "บอกรักในวันเลิก(พากย์ไทย)",
+          "cover": "https://hwztchapter.dramaboxdb.com/data/cppartner/4x2/42x0/420x0/42000009440/42000009440.jpg?t=1775789106640",
+          "source": "dramabox",
+          "at": "2026-05-02T15:56:54.714Z"
+        },
+        {
+          "bookId": "7623450918515641397",
+          "index": 1,
+          "bookName": "(พากย์)คุณพี่แอบรักเก็บไม่ไหวละ",
+          "cover": "https://wsrv.nl/?output=jpg&url=ssl%3Ap16-novel-sg.ibyteimg.com%2Fnovel-images-sg%2F0ee4e5a05ef28f0534daeb9fcdaa221c~tplv-shrink%3A640%3A0.heic",
+          "source": "melolo",
+          "at": "2026-05-02T15:17:38.628Z"
+        },
+        {
           "bookId": "42000008741",
           "index": 2,
           "bookName": "ภารกิจจีบหนุ่มครอบจักรวาล(พากย์ไทย)",
@@ -19,8 +43,12 @@
   },
   "sessions": {
     "26636d57a91d22566fd409664ea819a4f739113f1c94ef8e": "admin",
-    "9d61b41b822d0acd5fecaa55932d5cae4aeb0014e1748efc": "admin",
-    "b47d8d16dc40abe0b643bc861e47306971d347be42bd9b6e": "admin"
+    "b47d8d16dc40abe0b643bc861e47306971d347be42bd9b6e": "admin",
+    "d009830edc3b4a952ce7df0073e514ece8597db43e405d65": {
+      "username": "admin",
+      "loginAt": "2026-05-02T15:28:56.223Z",
+      "lastSeenAt": "2026-05-02T16:39:45.976Z"
+    }
   },
   "locks": {},
   "giftcards": {},
@@ -96,5 +124,23 @@
       "label": "VIP 30 วัน"
     }
   ],
-  "slipPending": []
+  "slipPending": [],
+  "freeMode": {
+    "enabled": false,
+    "message": "",
+    "startAt": null,
+    "endAt": null
+  },
+  "announcement": {
+    "enabled": false,
+    "text": "",
+    "color": "blue"
+  },
+  "maintenance": {
+    "enabled": false,
+    "message": ""
+  },
+  "disableTracking": false,
+  "hiddenBooks": {},
+  "loginLog": []
 }
