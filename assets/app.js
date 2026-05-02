@@ -1430,7 +1430,12 @@ async function playEpisode(ep, ctx) {
 
   const ctrl = new AbortController();
   video._ctrl = ctrl;
-  bindCustomControls(video, wrap, ctrl);
+  const playerOpts = {
+    qualities,
+    getCurrentQuality: () => currentQuality,
+    changeQuality: null, // ตั้งหลังประกาศฟังก์ชัน
+  };
+  bindCustomControls(video, wrap, ctrl, playerOpts);
 
   let attemptIdx = 0;
   const fallbackOrder = [currentQuality, ...qualities.filter(q => q !== currentQuality)];
@@ -1496,7 +1501,8 @@ async function playEpisode(ep, ctx) {
     video.load();
   }
 
-  // Auto-next + next ep button + quality selector + swipe
+  // Auto-next + next ep button + swipe
+  playerOpts.changeQuality = changeQuality;
   setupAutoNext(ep, video, ctx, ctrl, { qualities, getCurrentQuality: () => currentQuality, changeQuality });
 }
 
@@ -1504,43 +1510,69 @@ function buildCustomControls(video, wrap) {
   // Center play button (โชว์เมื่อ pause)
   const centerBtn = document.createElement('button');
   centerBtn.id = 'centerPlay';
-  centerBtn.className = 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-black/70 text-white text-4xl rounded-full flex items-center justify-center z-30 shadow-xl backdrop-blur-sm';
+  centerBtn.className = 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-black/70 text-white text-4xl rounded-full flex items-center justify-center z-30 shadow-xl backdrop-blur-sm pointer-events-auto';
   centerBtn.textContent = '▶';
   centerBtn.style.display = 'none';
   centerBtn.setAttribute('aria-label', 'play');
   wrap.appendChild(centerBtn);
 
-  // Overlay (tap zone + bottom controls)
+  // Seek feedback toast (double-tap ±10s, swipe detect)
+  const seekFb = document.createElement('div');
+  seekFb.id = 'seekFb';
+  seekFb.className = 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-black/85 text-white text-2xl font-bold px-5 py-3 rounded-2xl pointer-events-none z-40 transition-opacity duration-200';
+  seekFb.style.opacity = '0';
+  wrap.appendChild(seekFb);
+
+  // Overlay wrapper
   const overlay = document.createElement('div');
   overlay.id = 'ctrlOverlay';
-  overlay.className = 'absolute inset-0 flex flex-col z-20 transition-opacity duration-300';
+  overlay.className = 'absolute inset-0 z-20 transition-opacity duration-300';
   overlay.innerHTML = `
-    <div id="tapZone" class="flex-1"></div>
-    <div id="bottomBar" class="p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent select-none">
+    <!-- 3 tap zones (ซ้าย=double-tap -10s / กลาง=play-pause / ขวา=double-tap +10s) -->
+    <div class="absolute inset-0 flex">
+      <div id="zoneL" class="flex-1 pointer-events-auto"></div>
+      <div id="zoneC" class="flex-[2] pointer-events-auto"></div>
+      <div id="zoneR" class="flex-1 pointer-events-auto"></div>
+    </div>
+
+    <!-- Top bar: quality menu -->
+    <div class="absolute top-0 right-0 p-2 pointer-events-auto">
+      <button id="qualityBtn" class="bg-black/60 hover:bg-black/80 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1">
+        <span id="qualityLabel">Auto</span>
+        <span class="text-[9px]">▾</span>
+      </button>
+      <div id="qMenu" class="hidden mt-1 bg-black/95 border border-white/20 rounded-lg overflow-hidden shadow-2xl min-w-[90px]"></div>
+    </div>
+
+    <!-- Bottom bar: seek + controls -->
+    <div id="bottomBar" class="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent select-none pointer-events-auto">
       <input id="seekBar" type="range" min="0" max="1000" value="0" step="1" class="w-full h-1 accent-red-500 cursor-pointer mb-2"/>
       <div class="flex items-center justify-between text-white text-xs">
         <div class="flex items-center gap-3">
           <button id="playPauseBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="play/pause">▶</button>
           <span class="tabular-nums"><span id="curTime">0:00</span> / <span id="totTime">0:00</span></span>
         </div>
-        <button id="fsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="fullscreen">⛶</button>
+        <div class="flex items-center gap-2">
+          <button id="muteBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="mute">🔊</button>
+          <button id="fsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="fullscreen">⛶</button>
+        </div>
       </div>
     </div>
   `;
   wrap.appendChild(overlay);
 }
 
-function bindCustomControls(video, wrap, ctrl) {
+function bindCustomControls(video, wrap, ctrl, playerOpts) {
   const overlay = wrap.querySelector('#ctrlOverlay');
   const centerBtn = wrap.querySelector('#centerPlay');
+  const seekFb = wrap.querySelector('#seekFb');
   if (!overlay || !centerBtn) return;
 
-  const seekBar = overlay.querySelector('#seekBar');
-  const curTime = overlay.querySelector('#curTime');
-  const totTime = overlay.querySelector('#totTime');
-  const playPauseBtn = overlay.querySelector('#playPauseBtn');
-  const fsBtn = overlay.querySelector('#fsBtn');
-  const tapZone = overlay.querySelector('#tapZone');
+  const q = sel => overlay.querySelector(sel);
+  const seekBar = q('#seekBar'), curTime = q('#curTime'), totTime = q('#totTime');
+  const playPauseBtn = q('#playPauseBtn'), fsBtn = q('#fsBtn'), muteBtn = q('#muteBtn');
+  const zoneL = q('#zoneL'), zoneC = q('#zoneC'), zoneR = q('#zoneR');
+  const qualityBtn = q('#qualityBtn'), qualityLabel = q('#qualityLabel'), qMenu = q('#qMenu');
 
   const pad = n => String(Math.floor(n)).padStart(2, '0');
   const fmt = s => {
@@ -1551,32 +1583,55 @@ function bindCustomControls(video, wrap, ctrl) {
     return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
   };
 
+  const showFb = text => {
+    seekFb.textContent = text;
+    seekFb.style.opacity = '1';
+    clearTimeout(seekFb._t);
+    seekFb._t = setTimeout(() => { seekFb.style.opacity = '0'; }, 600);
+  };
+
   let hideTimer = null;
   const showCtrls = () => {
     overlay.style.opacity = '1';
-    overlay.style.pointerEvents = 'auto';
     clearTimeout(hideTimer);
-    if (!video.paused) hideTimer = setTimeout(() => {
-      overlay.style.opacity = '0';
-      overlay.style.pointerEvents = 'none';
-    }, 3000);
+    if (!video.paused) hideTimer = setTimeout(() => { overlay.style.opacity = '0'; }, 3000);
   };
   showCtrls();
 
   let seekDragging = false;
   const opts = { signal: ctrl.signal };
 
-  // Tap center video → toggle play/pause + show controls
-  tapZone.addEventListener('click', e => {
-    e.stopPropagation();
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
-    showCtrls();
-  }, opts);
-  centerBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    video.play().catch(() => {});
-  }, opts);
+  // ---- 3-zone tap handling ----
+  // Double-tap ซ้าย = -10s, Double-tap ขวา = +10s, Single-tap กลาง = play/pause + show controls
+  let lastTap = 0, lastZone = null, singleTapTimer = null;
+  const handleTap = zone => {
+    const now = Date.now();
+    const dt = now - lastTap;
+    clearTimeout(singleTapTimer);
+    if (dt < 350 && lastZone === zone && (zone === 'L' || zone === 'R')) {
+      // Double-tap seek
+      const delta = zone === 'L' ? -10 : 10;
+      video.currentTime = Math.max(0, Math.min(video.duration || Infinity, video.currentTime + delta));
+      showFb(zone === 'L' ? '◀◀ -10s' : '+10s ▶▶');
+      showCtrls();
+      lastTap = 0; lastZone = null;
+      return;
+    }
+    lastTap = now; lastZone = zone;
+    // Delay single-tap action เพื่อรอ double-tap
+    singleTapTimer = setTimeout(() => {
+      if (zone === 'C') {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      }
+      showCtrls();
+      lastTap = 0; lastZone = null;
+    }, 280);
+  };
+  zoneL.addEventListener('click', e => { e.stopPropagation(); handleTap('L'); }, opts);
+  zoneC.addEventListener('click', e => { e.stopPropagation(); handleTap('C'); }, opts);
+  zoneR.addEventListener('click', e => { e.stopPropagation(); handleTap('R'); }, opts);
+  centerBtn.addEventListener('click', e => { e.stopPropagation(); video.play().catch(() => {}); }, opts);
   playPauseBtn.addEventListener('click', e => {
     e.stopPropagation();
     if (video.paused) video.play().catch(() => {});
@@ -1584,7 +1639,7 @@ function bindCustomControls(video, wrap, ctrl) {
     showCtrls();
   }, opts);
 
-  // Video state → update UI
+  // ---- Video state → UI ----
   video.addEventListener('play', () => {
     playPauseBtn.textContent = '⏸';
     centerBtn.style.display = 'none';
@@ -1595,9 +1650,7 @@ function bindCustomControls(video, wrap, ctrl) {
     centerBtn.style.display = 'flex';
     clearTimeout(hideTimer);
     overlay.style.opacity = '1';
-    overlay.style.pointerEvents = 'auto';
   }, opts);
-
   video.addEventListener('loadedmetadata', () => {
     totTime.textContent = fmt(video.duration);
     seekBar.max = Math.max(1, Math.floor(video.duration * 1000));
@@ -1609,19 +1662,32 @@ function bindCustomControls(video, wrap, ctrl) {
     }
   }, opts);
 
-  // Seek drag
-  seekBar.addEventListener('input', () => {
+  // ---- Seek drag ----
+  seekBar.addEventListener('input', e => {
+    e.stopPropagation();
     seekDragging = true;
     curTime.textContent = fmt(seekBar.value / 1000);
     showCtrls();
   }, opts);
-  seekBar.addEventListener('change', () => {
+  seekBar.addEventListener('change', e => {
+    e.stopPropagation();
     video.currentTime = seekBar.value / 1000;
     seekDragging = false;
     showCtrls();
   }, opts);
 
-  // Fullscreen on WRAP (not video) → swipe + popup ยังทำงานใน fullscreen
+  // ---- Mute ----
+  const updateMuteUI = () => { muteBtn.textContent = video.muted || video.volume === 0 ? '🔇' : '🔊'; };
+  muteBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    video.muted = !video.muted;
+    updateMuteUI();
+    showCtrls();
+  }, opts);
+  video.addEventListener('volumechange', updateMuteUI, opts);
+  updateMuteUI();
+
+  // ---- Fullscreen (on WRAP — swipe + popup ใช้ได้ใน fullscreen) ----
   fsBtn.addEventListener('click', async e => {
     e.stopPropagation();
     try {
@@ -1633,18 +1699,45 @@ function bindCustomControls(video, wrap, ctrl) {
       }
     } catch {}
   }, opts);
-
-  // Fullscreen state → adjust video sizing
-  const onFsChange = () => {
-    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    wrap.classList.toggle('fs-active', isFs);
-    fsBtn.textContent = isFs ? '⛶' : '⛶';
-    showCtrls();
-  };
+  const onFsChange = () => { showCtrls(); };
   document.addEventListener('fullscreenchange', onFsChange, opts);
   document.addEventListener('webkitfullscreenchange', onFsChange, opts);
 
-  // Show controls on any interaction in wrap
+  // ---- Quality menu ----
+  const qualities = playerOpts?.qualities || [];
+  const getCurQ = playerOpts?.getCurrentQuality;
+  if (qualities.length && getCurQ) {
+    const renderMenu = () => {
+      const cur = getCurQ();
+      qualityLabel.textContent = cur.label;
+      qMenu.innerHTML = qualities.map(qq =>
+        `<button data-q="${qq.label}" class="qopt block w-full text-left px-3 py-2 text-xs font-semibold ${qq.label === cur.label ? 'bg-red-600 text-white' : 'text-zinc-200 hover:bg-white/10'}">${qq.label}</button>`
+      ).join('');
+      qMenu.querySelectorAll('.qopt').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation();
+        const label = b.dataset.q;
+        if (playerOpts.changeQuality) playerOpts.changeQuality(label);
+        qMenu.classList.add('hidden');
+        renderMenu();
+      }, opts));
+    };
+    renderMenu();
+    qualityBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      qMenu.classList.toggle('hidden');
+      showCtrls();
+    }, opts);
+    // Close menu when clicking outside
+    overlay.addEventListener('click', e => {
+      if (!qualityBtn.contains(e.target) && !qMenu.contains(e.target)) qMenu.classList.add('hidden');
+    }, opts);
+    // Sync UI เมื่อ quality เปลี่ยนจาก revert
+    video.addEventListener('loadedmetadata', renderMenu, opts);
+  } else {
+    qualityBtn.style.display = 'none';
+  }
+
+  // Show controls on any touch
   wrap.addEventListener('touchstart', () => showCtrls(), { passive: true, signal: ctrl.signal });
   wrap.addEventListener('mousemove', () => showCtrls(), { passive: true, signal: ctrl.signal });
 }
@@ -1742,14 +1835,6 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
         <input id="autoNextCb" type="checkbox" ${autoNext ? 'checked' : ''} class="w-4 h-4 accent-red-500"/>
         <span>เล่นตอนถัดไปอัตโนมัติ</span>
       </label>
-      ${playerOpts?.qualities?.length ? `
-        <div class="flex items-center gap-1.5 text-xs">
-          <span class="text-zinc-500">คุณภาพ:</span>
-          <select id="qualitySel" ${playerOpts.qualities.length < 2 ? 'disabled' : ''} class="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-white text-xs font-semibold cursor-pointer hover:border-red-500 disabled:opacity-60 disabled:cursor-default">
-            ${playerOpts.qualities.map(q => `<option value="${q.label}" ${q.label === playerOpts.getCurrentQuality().label ? 'selected' : ''}>${q.label}</option>`).join('')}
-          </select>
-        </div>
-      ` : ''}
       <div class="flex items-center gap-2">
         ${prevEp ? `<button id="prevEpBtn" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-sm">◀ EP ${prevEp.chapterIndex}</button>` : ''}
         ${nextEp ? `<button id="nextEpBtn" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-semibold">EP ${nextEp.chapterIndex} ▶</button>` : '<span class="text-zinc-500 text-sm">ตอนสุดท้ายแล้ว</span>'}
@@ -1762,51 +1847,43 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
     autoNext = e.target.checked;
     localStorage.setItem('mkw_autonext', autoNext ? '1' : '0');
   };
-  const qSel = $('#qualitySel');
-  if (qSel && playerOpts?.changeQuality) {
-    qSel.onchange = e => playerOpts.changeQuality(e.target.value);
-  }
   if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
   if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
 
   // Swipe gesture — ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → แสดง popup ยืนยัน (video เล่นต่อปกติ)
   const wrap = $('#videoWrap');
-  if ((nextEp || prevEp)) {
-    let sy = 0, sx = 0, st = 0;
+  if ((nextEp || prevEp) && wrap) {
+    let sy = 0, sx = 0, st = 0, tracking = false;
+    const isInPlayer = tgt => tgt && (wrap === tgt || wrap.contains(tgt) || (document.fullscreenElement || document.webkitFullscreenElement) === wrap);
+    const isOnControls = tgt => tgt && tgt.closest && tgt.closest('#bottomBar, #qualityBtn, #qMenu, #centerPlay');
+
     const onStart = e => {
-      if (e.touches.length !== 1) { st = 0; return; }
-      // Skip ถ้าเริ่ม touch บน controls (ปุ่ม play/pause, seekbar, fullscreen)
-      const tgt = e.target;
-      if (tgt && tgt.closest && tgt.closest('#bottomBar, #centerPlay')) { st = 0; return; }
+      if (!isInPlayer(e.target) || e.touches.length !== 1) { tracking = false; return; }
+      if (isOnControls(e.target)) { tracking = false; return; }
       const t = e.touches[0];
       sy = t.clientY; sx = t.clientX; st = Date.now();
+      tracking = true;
     };
     const onEnd = e => {
-      if (!st || e.changedTouches.length !== 1) return;
+      if (!tracking || e.changedTouches.length !== 1) return;
+      tracking = false;
       const t = e.changedTouches[0];
       const dy = t.clientY - sy;
       const dx = t.clientX - sx;
-      const dt = Date.now() - st;
-      st = 0;
-      if (dt > 700 || Math.abs(dy) < 50 || Math.abs(dy) < Math.abs(dx) * 1.2) return;
+      // Thresholds: ระยะ ≥40px + vertical dominant (ไม่สน dt)
+      if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx)) return;
+      const fb = wrap.querySelector('#seekFb');
       if (dy < 0 && prevEp) {
-        // swipe ขึ้น → ย้อนกลับ ep ก่อน
+        if (fb) { fb.textContent = `↑ EP ${prevEp.chapterIndex}`; fb.style.opacity = '1'; setTimeout(() => { fb.style.opacity = '0'; }, 400); }
         showEpChangeConfirm(ep.chapterIndex, prevEp.chapterIndex, () => goToEpisode(prevEp.chapterIndex, ctx));
       } else if (dy > 0 && nextEp) {
-        // swipe ลง → ไป ep ถัดไป
+        if (fb) { fb.textContent = `↓ EP ${nextEp.chapterIndex}`; fb.style.opacity = '1'; setTimeout(() => { fb.style.opacity = '0'; }, 400); }
         showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
       }
     };
-    // ผูกที่ทั้ง wrap และ video — กันกรณี native controls กิน event
-    const opts = { passive: true, signal: ctrl?.signal };
-    if (wrap) {
-      wrap.addEventListener('touchstart', onStart, opts);
-      wrap.addEventListener('touchend', onEnd, opts);
-    }
-    if (video) {
-      video.addEventListener('touchstart', onStart, opts);
-      video.addEventListener('touchend', onEnd, opts);
-    }
+    // Listen ที่ document ใน capture phase — ได้ event แม้ใน fullscreen และไม่ถูก child element กิน
+    document.addEventListener('touchstart', onStart, { passive: true, capture: true, signal: ctrl?.signal });
+    document.addEventListener('touchend', onEnd, { passive: true, capture: true, signal: ctrl?.signal });
   }
 
   if (!nextEp) return;
