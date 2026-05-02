@@ -798,6 +798,11 @@ async function initPlayPage() {
   await auth.refresh();
   await publicConfig.load();
   if (maintenanceGate()) return;
+  // Soft gate ใน freeMode: guest ต้อง login ก่อนเล่น (หลัง login แล้วดูฟรีทุกอย่าง)
+  if (!auth.user && publicConfig.isFreeMode()) {
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    return;
+  }
   document.body.insertAdjacentHTML('afterbegin', renderHeader(''));
   renderAnnouncementBanner();
   startHeartbeat();
