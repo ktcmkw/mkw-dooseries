@@ -1,5 +1,5 @@
 // ============================================================
-// MKW - dooseries — assets/admin.js
+// MKW Movies — assets/admin.js
 // Admin dashboard (requires role=admin)
 // ============================================================
 
@@ -203,13 +203,17 @@ async function renderUsersTab(c) {
     try {
       const { history } = await backendGet(`/api/admin/user/${encodeURIComponent(username)}/history`);
       const rowsHtml = history.length
-        ? history.map(h => `
+        ? history.map(h => {
+            const src = h.source || 'dramabox';
+            const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
+            return `
           <tr class="border-t border-zinc-800">
             <td class="px-3 py-2 text-xs text-zinc-400">${escapeHtml((h.at || '').replace('T', ' ').slice(0, 19))}</td>
-            <td class="px-3 py-2 text-sm">${escapeHtml(h.bookName || '(ไม่ทราบชื่อ)')}</td>
+            <td class="px-3 py-2 text-sm">${escapeHtml(h.bookName || '(ไม่ทราบชื่อ)')} <span class="ml-1 text-[10px] px-1 py-0.5 rounded bg-zinc-700 text-zinc-300">${escapeHtml(src)}</span></td>
             <td class="px-3 py-2 text-right"><span class="px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded text-xs">EP ${h.index}</span></td>
-            <td class="px-3 py-2 text-right text-xs"><a href="/play?bookId=${encodeURIComponent(h.bookId)}&index=${h.index}" target="_blank" class="text-red-400 hover:underline">เปิดดู →</a></td>
-          </tr>`).join('')
+            <td class="px-3 py-2 text-right text-xs"><a href="/play?bookId=${encodeURIComponent(h.bookId)}&index=${h.index}${srcQ}" target="_blank" class="text-red-400 hover:underline">เปิดดู →</a></td>
+          </tr>`;
+          }).join('')
         : `<tr><td colspan="4" class="px-3 py-10 text-center text-zinc-500 text-sm">ยังไม่มีประวัติการดู</td></tr>`;
       $('#userModal').innerHTML = `
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.8);backdrop-filter:blur(4px)" id="histOverlay">

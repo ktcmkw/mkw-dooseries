@@ -1,7 +1,7 @@
 {
   "name": "mkw-dooseries",
   "version": "1.0.0",
-  "description": "MKW - dooseries: Thai drama streaming site",
+  "description": "MKW Movies: Thai drama streaming site",
   "main": "serve.js",
   "scripts": {
     "start": "node serve.js"

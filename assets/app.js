@@ -1,11 +1,24 @@
 // ============================================================
-// MKW - dooseries — assets/app.js
-// API: seriesjeen (via /proxy/*) + local backend (/api/*)
+// MKW Movies — assets/app.js
+// API: seriesjeen (via /proxy/api/platform/<source>/*) + local backend (/api/*)
 // ============================================================
 
-const API_BASE = '/proxy/api/platform/dramabox';
+const API_SOURCES = ['dramabox', 'melolo'];
+const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo' };
+const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500' };
 const PAGE_SIZE = 40;
-const BRAND = 'MKW - dooseries';
+const BRAND = 'MKW Movies';
+
+function getSource() {
+  const s = localStorage.getItem('mkw_source') || 'all';
+  return (s === 'all' || API_SOURCES.includes(s)) ? s : 'all';
+}
+function setSource(s) {
+  if (s === 'all' || API_SOURCES.includes(s)) localStorage.setItem('mkw_source', s);
+}
+function apiBase(source) {
+  return `/proxy/api/platform/${source || 'dramabox'}`;
+}
 
 // ---------- Auth state ----------
 const auth = {
@@ -56,15 +69,182 @@ const auth = {
 };
 
 // ---------- API clients ----------
-async function apiGet(path) {
-  const res = await fetch(API_BASE + path);
+async function apiGet(path, source) {
+  const src = source || 'dramabox';
+  const res = await fetch(apiBase(src) + path);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    const err = new Error(`HTTP ${res.status} — ${path}`);
-    err.status = res.status; err.endpoint = path; err.body = body.slice(0, 400);
+    const err = new Error(`HTTP ${res.status} — [${src}] ${path}`);
+    err.status = res.status; err.endpoint = path; err.source = src; err.body = body.slice(0, 400);
     throw err;
   }
   return res.json();
+}
+
+// Tag every drama item with __source สำหรับ render badge + URL
+function tagSource(payload, src) {
+  if (Array.isArray(payload)) return payload.map(x => ({ ...x, __source: src }));
+  if (payload && Array.isArray(payload.items)) {
+    return { ...payload, items: payload.items.map(x => ({ ...x, __source: src })) };
+  }
+  return payload;
+}
+
+// ---------- Source adapters: map endpoint + response shape ของ Melolo → DramaBox shape ----------
+// DramaBox: GET /detail?bookId=X      → object {bookId, bookName, coverWap, chapterCount, introduction, tagV3s, ...}
+//           GET /allepisode?bookId=X  → array  [{chapterIndex, isCharge, "1080p", videoUrl, "540p"}, ...]
+// Melolo:   GET /detail/{id}          → {id, title, cover, episodes:N, intro, videos:[{episode, vid, duration}, ...]}
+//           GET /video?id=X&ep=N      → {videoUrl, qualityList:[{label,url}], locked, ...}  (per-episode URL)
+const SOURCE_ADAPTERS = {
+  dramabox: {
+    detailPath: id => `/detail?bookId=${encodeURIComponent(id)}`,
+    episodesPath: id => `/allepisode?bookId=${encodeURIComponent(id)}`,
+    normalizeDetail: r => r,        // identity
+    normalizeEpisodes: r => Array.isArray(r) ? r : [],
+    extractEpisodesFromDetail: () => null,  // DramaBox ต้อง fetch /allepisode แยก
+    fetchVideoUrl: null,                    // DramaBox ส่ง URL พร้อมใน /allepisode แล้ว
+  },
+  melolo: {
+    detailPath: id => `/detail/${encodeURIComponent(id)}`,
+    episodesPath: null,  // Melolo ไม่มี endpoint นี้ — ใช้ extractEpisodesFromDetail แทน
+    normalizeDetail: r => {
+      if (!r) return null;
+      return {
+        bookId: String(r.id || ''),
+        bookName: r.title || '(ไม่ทราบชื่อ)',
+        coverWap: r.cover || '',
+        cover: r.cover || '',
+        chapterCount: typeof r.episodes === 'number' ? r.episodes : (Array.isArray(r.videos) ? r.videos.length : 0),
+        introduction: r.intro || '',
+        tagV3s: [],
+        playCount: '',
+        shelfTime: '',
+        corner: null,
+      };
+    },
+    normalizeEpisodes: () => [],   // ไม่ใช้ — extract จาก detail แทน
+    extractEpisodesFromDetail: r => {
+      const videos = Array.isArray(r?.videos) ? r.videos : [];
+      return videos.map(v => ({
+        chapterIndex: Number(v.episode || v.ep || 0),
+        isCharge: false,           // Melolo ไม่มี info เรื่องนี้ — ปล่อย locked เช็คตอน /video
+        videoUrl: '',              // Lazy — fetch ตอน playEpisode
+        '1080p': '',
+        '540p': '',
+        _vid: v.vid,
+        _duration: v.duration,
+      })).sort((a, b) => a.chapterIndex - b.chapterIndex);
+    },
+    fetchVideoUrl: async (bookId, ep) => {
+      const v = await apiGet(`/video?id=${encodeURIComponent(bookId)}&ep=${ep}`, 'melolo');
+      const list = Array.isArray(v.qualityList) ? v.qualityList : [];
+      const q1080 = list.find(x => x.label === '1080p')?.url || '';
+      const q720 = list.find(x => x.label === '720p')?.url || '';
+      const q540 = list.find(x => x.label === '540p')?.url || '';
+      return {
+        videoUrl: v.videoUrl || q1080 || q720 || q540 || '',
+        '1080p': q1080,
+        '540p': q540,
+        locked: !!v.locked,
+      };
+    },
+  },
+};
+function getAdapter(source) {
+  return SOURCE_ADAPTERS[source] || SOURCE_ADAPTERS.dramabox;
+}
+async function apiGetDetail(bookId, source) {
+  const a = getAdapter(source);
+  const raw = await apiGet(a.detailPath(bookId), source);
+  return a.normalizeDetail(raw);
+}
+// คืน {detail, episodes, detailErr, epsErr} — Melolo ใช้ 1 fetch, DramaBox ใช้ 2 fetch parallel
+async function fetchDetailAndEpisodes(bookId, source) {
+  const a = getAdapter(source);
+  if (a.extractEpisodesFromDetail && !a.episodesPath) {
+    // Single-fetch source (Melolo): ดึง detail แล้ว extract episodes จากนั้นเลย
+    try {
+      const raw = await apiGet(a.detailPath(bookId), source);
+      return {
+        detail: a.normalizeDetail(raw),
+        episodes: a.extractEpisodesFromDetail(raw) || [],
+        detailErr: null, epsErr: null,
+      };
+    } catch (e) {
+      return { detail: null, episodes: [], detailErr: e, epsErr: e };
+    }
+  }
+  // Two-fetch source (DramaBox): parallel
+  const [d, e] = await Promise.allSettled([
+    apiGet(a.detailPath(bookId), source),
+    apiGet(a.episodesPath(bookId), source),
+  ]);
+  return {
+    detail: d.status === 'fulfilled' ? a.normalizeDetail(d.value) : null,
+    episodes: e.status === 'fulfilled' ? a.normalizeEpisodes(e.value) : [],
+    detailErr: d.status === 'rejected' ? d.reason : null,
+    epsErr: e.status === 'rejected' ? e.reason : null,
+  };
+}
+// Lazy URL fetch — ใช้ตอนจะเล่น ep ที่ยังไม่มี URL (เฉพาะ Melolo)
+async function ensureEpisodeUrl(ep, bookId, source) {
+  if (ep.videoUrl || ep['1080p'] || ep['540p']) return ep;  // มีอยู่แล้ว
+  const a = getAdapter(source);
+  if (!a.fetchVideoUrl) return ep;
+  const r = await a.fetchVideoUrl(bookId, ep.chapterIndex);
+  ep.videoUrl = r.videoUrl;
+  ep['1080p'] = r['1080p'];
+  ep['540p'] = r['540p'];
+  return ep;
+}
+
+// ดึง list endpoint จาก source ที่ active — 'all' = parallel ทั้ง 2 + interleave
+// path อาจเป็น string (เหมือนกันทั้ง 2 source) หรือ spec { dramabox, melolo, filter? }
+async function apiGetList(pathOrSpec) {
+  const isSpec = typeof pathOrSpec === 'object' && pathOrSpec !== null;
+  const getPath = s => isSpec ? pathOrSpec[s] : pathOrSpec;
+  const getFilter = s => isSpec ? pathOrSpec.filter?.[s] : null;
+
+  const src = getSource();
+  if (src !== 'all') {
+    const path = getPath(src);
+    if (!path) {
+      // No endpoint for selected source → empty (UI shows "ไม่มีรายการ")
+      return { items: [], total: 0, _multi: true, _buckets: API_SOURCES.map(s => ({ source: s, count: 0, skipped: !getPath(s) || s !== src })) };
+    }
+    const data = await apiGet(path, src);
+    let payload = tagSource(data, src);
+    const ff = getFilter(src);
+    if (ff) {
+      const items = pickList(payload).filter(ff);
+      payload = { ...payload, items, total: items.length };
+    }
+    return payload;
+  }
+  // 'all' mode — fetch แต่ละ source ที่มี endpoint
+  const targets = API_SOURCES.map(s => ({ source: s, path: getPath(s) }));
+  const fetchable = targets.filter(t => t.path);
+  const results = await Promise.allSettled(fetchable.map(t => apiGet(t.path, t.source)));
+  const buckets = results.map((r, i) => {
+    const source = fetchable[i].source;
+    if (r.status !== 'fulfilled') return { source, items: [], total: 0, err: r.reason };
+    let items = pickList(r.value).map(x => ({ ...x, __source: source }));
+    const ff = getFilter(source);
+    if (ff) items = items.filter(ff);
+    return { source, items, total: r.value?.total ?? items.length };
+  });
+  // เพิ่ม skipped buckets สำหรับ source ที่ไม่มี endpoint (เช่น chip "การ์ตูน" ที่ Melolo ไม่มีหมวด)
+  for (const t of targets) {
+    if (!t.path) buckets.push({ source: t.source, items: [], total: 0, skipped: true });
+  }
+  const ok = buckets.filter(b => !b.err && !b.skipped);
+  if (!ok.length) throw (buckets.find(b => b.err)?.err) || new Error('No source available');
+  // Interleave round-robin (เลี่ยง bias ไป source ใดเดียว)
+  const merged = [];
+  const max = Math.max(0, ...buckets.map(b => b.items.length));
+  for (let i = 0; i < max; i++) for (const b of buckets) if (b.items[i]) merged.push(b.items[i]);
+  const total = buckets.reduce((s, b) => s + (b.total || 0), 0);
+  return { items: merged, total, _multi: true, _buckets: buckets.map(b => ({ source: b.source, count: b.items.length, total: b.total || 0, err: b.err?.message || null, skipped: !!b.skipped })) };
 }
 
 async function backendGet(path) {
@@ -337,6 +517,33 @@ function attachHeaderEvents() {
   // kept for backwards compatibility but global delegation below does the work
 }
 
+// Source switcher — inline (วางคู่กับ h2 page title), responsive flex-wrap
+function renderSourceSwitcherInline() {
+  const cur = getSource();
+  const opts = [
+    { key: 'all',      label: 'ทั้งหมด' },
+    { key: 'dramabox', label: SOURCE_LABELS.dramabox },
+    { key: 'melolo',   label: SOURCE_LABELS.melolo },
+  ];
+  return `
+    <div class="source-switcher inline-flex items-center gap-1.5 flex-wrap">
+      <span class="text-xs text-zinc-500">แหล่ง:</span>
+      ${opts.map(o => `
+        <button data-src="${o.key}" class="src-btn px-2.5 py-1 rounded-full text-xs font-bold transition-colors ${cur === o.key ? 'bg-red-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'}">${escapeHtml(o.label)}</button>
+      `).join('')}
+    </div>`;
+}
+function attachSourceSwitcherEvents() {
+  document.querySelectorAll('.source-switcher .src-btn').forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.src;
+      if (getSource() === k) return;
+      setSource(k);
+      location.reload();
+    };
+  });
+}
+
 // Global click delegation — one registration for all pages/renders
 document.addEventListener('click', e => {
   const um = document.getElementById('userMenu');
@@ -358,7 +565,12 @@ document.addEventListener('click', e => {
 function renderFooter() {
   return `
     <footer class="max-w-[1600px] mx-auto px-6 py-10 text-center text-xs text-zinc-600 border-t border-zinc-900 mt-10">
-      <p>${BRAND}</p>
+      <div class="flex items-center justify-center gap-4 flex-wrap mb-2">
+        <a href="/privacy" class="hover:text-zinc-300 transition-colors">นโยบายความเป็นส่วนตัว</a>
+        <span class="text-zinc-700">·</span>
+        <a href="/terms" class="hover:text-zinc-300 transition-colors">ข้อกำหนดการใช้งาน</a>
+      </div>
+      <p>&copy; 2026 KTCMKW</p>
     </footer>`;
 }
 
@@ -388,27 +600,32 @@ function dramaCard(d) {
   // ซ่อนซีรีส์ที่ admin ตั้ง hidden ไว้ (admin ยังเห็นจาก backend แต่ frontend filter หมดทุก role)
   if (publicConfig.data && publicConfig.hiddenBookSet().has(rawId) && auth.user?.role !== 'admin') return '';
   const id = encodeURIComponent(rawId);
+  const src = d.__source || 'dramabox';
+  const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
   const title = d.title || d.bookName || '';
   const cover = d.cover || d.coverWap || '';
   const n = d.episode_count || d.chapterCount || 0;
   const firstGenre = (d.genre || '').split(',')[0].trim();
   const tLower = title.toLowerCase();
-  const isThaiDub = title.includes('พากย์ไทย') || tLower.includes('thai dub');
+  // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
+  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
   const isSubThai = !isThaiDub && (tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
   const langBadge = isThaiDub
-    ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-red-600 text-white text-[10px] font-bold rounded shadow">พากย์ไทย</div>'
+    ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">พากย์ไทย</div>'
     : isSubThai
       ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">SUBTHAI</div>'
       : '';
+  const srcBadge = `<div class="absolute top-2 right-2 px-2 py-0.5 ${SOURCE_BADGE_CLS[src] || 'bg-zinc-700'} text-white text-[10px] font-bold rounded shadow">${escapeHtml(SOURCE_LABELS[src] || src.toUpperCase())}</div>`;
   return `
-    <a href="/detail?bookId=${id}${n ? `&n=${n}` : ''}" class="card cursor-pointer block">
+    <a href="/detail?bookId=${id}${n ? `&n=${n}` : ''}${srcQ}" class="card cursor-pointer block">
       <div class="relative card-img rounded-lg overflow-hidden bg-zinc-900">
         <img src="${escapeHtml(cover)}" alt="" loading="lazy" class="w-full h-full object-cover" onerror="this.style.opacity=0"/>
         <div class="absolute inset-0 gradient-fade"></div>
         ${langBadge}
+        ${srcBadge}
         <div class="absolute bottom-2 left-2 right-2">
           <div class="text-white font-bold text-sm leading-tight glow-text line-clamp-2">${escapeHtml(title)}</div>
-          <div class="text-zinc-300 text-[11px] mt-0.5 glow-text">${n} ตอน${firstGenre ? ' • ' + escapeHtml(firstGenre) : ''}</div>
+          <div class="text-[11px] mt-0.5 glow-text"><span class="text-amber-300 font-bold">🎬 ${n}</span><span class="text-zinc-300"> ตอน${firstGenre ? ' • ' + escapeHtml(firstGenre) : ''}</span></div>
         </div>
       </div>
     </a>`;
@@ -469,6 +686,7 @@ async function mountPage(headerKey, mainHtml, mainClass) {
   document.body.appendChild(main);
   document.body.insertAdjacentHTML('beforeend', renderFooter());
   attachHeaderEvents();
+  attachSourceSwitcherEvents();
   startHeartbeat();
   return main;
 }
@@ -478,6 +696,7 @@ async function mountPage(headerKey, mainHtml, mainClass) {
 // ============================================================
 
 async function initBrowsePage(opts) {
+  const showSwitcher = opts.showSwitcher !== false;
   const filterBarHtml = opts.filterBar ? `
     <div class="flex gap-2 flex-wrap mb-4">
       ${opts.filterBar.items.map(f => `
@@ -485,24 +704,43 @@ async function initBrowsePage(opts) {
       `).join('')}
     </div>` : '';
   await mountPage(opts.active, `
-    <h2 class="text-2xl sm:text-3xl font-black tracking-tight mb-1">${escapeHtml(opts.title)}</h2>
+    <div class="flex items-center gap-3 flex-wrap mb-1">
+      <h2 class="text-2xl sm:text-3xl font-black tracking-tight">${escapeHtml(opts.title)}</h2>
+      ${showSwitcher ? renderSourceSwitcherInline() : ''}
+    </div>
     <p class="text-sm text-zinc-500 mb-4">${escapeHtml(opts.subtitle || '')}</p>
     ${filterBarHtml}
     <div id="msg"></div>
     <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"></div>
     <div id="pagination"></div>
   `);
+  attachSourceSwitcherEvents();
   const grid = $('#grid');
   grid.innerHTML = skeletonGrid();
   try {
-    const res = await apiGet(opts.endpoint);
+    const res = await apiGetList(opts.endpoint);
     const list = pickList(res);
     renderGrid(grid, list);
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
-    $('#msg').innerHTML = `<div class="text-sm text-zinc-500 mb-3">${list.length} เรื่อง${total}</div>`;
-    if (opts.pagination && res.total) {
-      const totalPages = Math.ceil(res.total / opts.pagination.size);
-      $('#pagination').innerHTML = renderPagination(opts.pagination.page, totalPages, opts.pagination.basePath, opts.pagination.basePathSep);
+    let bucketsNote = '';
+    if (res?._multi && res._buckets) {
+      const parts = res._buckets.map(b => {
+        if (b.skipped) return `<span class="text-zinc-600">${SOURCE_LABELS[b.source] || b.source}: —</span>`;
+        if (b.err)     return `<span class="text-red-400">${SOURCE_LABELS[b.source] || b.source}: ✕</span>`;
+        return `<span>${SOURCE_LABELS[b.source] || b.source}: ${b.count}</span>`;
+      });
+      bucketsNote = ` • ${parts.join(' / ')}`;
+    }
+    $('#msg').innerHTML = `<div class="text-sm text-zinc-500 mb-3">${list.length} เรื่อง${total}${bucketsNote}</div>`;
+    if (opts.pagination) {
+      // 'all' mode: ใช้ max total ของ buckets เป็นฐาน (DramaBox มักใหญ่กว่า → user navigate ผ่าน page เดียวได้)
+      const basis = res._multi
+        ? Math.max(0, ...(res._buckets || []).map(b => b.total || 0))
+        : (res.total || 0);
+      const totalPages = Math.ceil(basis / opts.pagination.size);
+      if (totalPages > 1) {
+        $('#pagination').innerHTML = renderPagination(opts.pagination.page, totalPages, opts.pagination.basePath, opts.pagination.basePathSep);
+      }
     }
   } catch (e) {
     grid.innerHTML = '';
@@ -515,17 +753,29 @@ async function initHomePage() {
   const page = Math.max(1, parseInt(qs('page') || '1', 10));
   const filter = qs('filter') || 'all';
   const size = 50;
+  // Per-source endpoint mapping — Melolo /search ไม่รองรับ keyword Thai + ไม่มี genre → ใช้ /list + client filter
+  const dList = p => `/list?page=${p}&page_size=${size}`;
+  const dThaiKeyword = encodeURIComponent('พากย์ไทย');
+  const meloloThaiFilter = it => /\(พากย์\)|พากย์ไทย/.test(it.title || '');
   const filters = [
-    { key: 'all',    label: 'ทั้งหมด',    endpoint: p => `/list?page=${p}&page_size=${size}` },
-    { key: 'thai',   label: 'พากย์ไทย',   endpoint: p => `/search?keyword=${encodeURIComponent('พากย์ไทย')}&page=${p}&page_size=${size}` },
-    { key: 'anime',  label: 'การ์ตูน',     endpoint: p => `/genre/3744?page=${p}&page_size=${size}` },
-    { key: 'vip',    label: 'VIP',        endpoint: p => `/genre/1265?page=${p}&page_size=${size}` },
+    { key: 'all',    label: 'ทั้งหมด',
+      spec: p => ({ dramabox: dList(p), melolo: dList(p) }) },
+    { key: 'thai',   label: 'พากย์ไทย',
+      spec: p => ({
+        dramabox: `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`,
+        melolo: dList(p),
+        filter: { melolo: meloloThaiFilter },
+      }) },
+    { key: 'anime',  label: 'การ์ตูน',
+      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null }) },
+    { key: 'vip',    label: 'VIP',
+      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null }) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 
   await initBrowsePage({
     active: 'home', title: 'หน้าแรก', subtitle: `ซีรีส์ ${active.label} • หน้าละ ${size} เรื่อง (เรียงใหม่→เก่า)`,
-    endpoint: active.endpoint(page),
+    endpoint: active.spec(page),
     pagination: { page, size, basePath: `/?filter=${active.key}`, basePathSep: '&' },
     filterBar: { items: filters, active: active.key, basePath: '/' },
   });
@@ -566,7 +816,10 @@ function initRecommendPage() {
 async function initSearchPage() {
   const initialQ = qs('q') || '';
   await mountPage('search', `
-    <h2 class="text-2xl sm:text-3xl font-black tracking-tight mb-1">ค้นหาซีรีส์</h2>
+    <div class="flex items-center gap-3 flex-wrap mb-1">
+      <h2 class="text-2xl sm:text-3xl font-black tracking-tight">ค้นหาซีรีส์</h2>
+      ${renderSourceSwitcherInline()}
+    </div>
     <p class="text-sm text-zinc-500 mb-5">พิมพ์ชื่อ, แนว หรือคำค้นหา (รองรับ TH / EN)</p>
     <form id="searchForm" class="flex gap-2 mb-6">
       <input id="searchInput" type="text" value="${escapeHtml(initialQ)}" placeholder="เช่น love, ความรัก, ซีอีโอ..." class="flex-1 px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white placeholder-zinc-500"/>
@@ -575,6 +828,7 @@ async function initSearchPage() {
     <div id="msg"></div>
     <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"></div>
   `);
+  attachSourceSwitcherEvents();
   $('#searchForm').onsubmit = e => { e.preventDefault(); doSearch($('#searchInput').value.trim()); };
   if (initialQ) doSearch(initialQ);
 }
@@ -587,10 +841,26 @@ async function doSearch(q) {
   grid.innerHTML = skeletonGrid(8);
   msg.innerHTML = '';
   try {
-    const res = await apiGet(`/search?keyword=${encodeURIComponent(q)}&page=1&page_size=${PAGE_SIZE}`);
+    // DramaBox: /search?keyword=Q (รองรับ Thai)
+    // Melolo: /search ไม่รับ Thai → ใช้ /list + client filter ที่ title.includes(Q)
+    const qLower = q.toLowerCase();
+    const res = await apiGetList({
+      dramabox: `/search?keyword=${encodeURIComponent(q)}&page=1&page_size=${PAGE_SIZE}`,
+      melolo: `/list?page=1&page_size=${PAGE_SIZE}`,
+      filter: { melolo: it => String(it.title || '').toLowerCase().includes(qLower) },
+    });
     const list = pickList(res);
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
-    msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3">พบ ${list.length} เรื่อง${total} สำหรับ "${escapeHtml(q)}"</div>`;
+    let bucketsNote = '';
+    if (res?._multi && res._buckets) {
+      const parts = res._buckets.map(b => {
+        if (b.skipped) return `<span class="text-zinc-600">${SOURCE_LABELS[b.source] || b.source}: —</span>`;
+        if (b.err)     return `<span class="text-red-400">${SOURCE_LABELS[b.source] || b.source}: ✕</span>`;
+        return `<span>${SOURCE_LABELS[b.source] || b.source}: ${b.count}</span>`;
+      });
+      bucketsNote = ` • ${parts.join(' / ')}`;
+    }
+    msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3">พบ ${list.length} เรื่อง${total}${bucketsNote} สำหรับ "${escapeHtml(q)}"</div>`;
     renderGrid(grid, list);
   } catch (e) {
     grid.innerHTML = '';
@@ -605,50 +875,97 @@ async function doSearch(q) {
 
 async function initCategoryPage() {
   await mountPage('category', `
-    <h2 class="text-2xl sm:text-3xl font-black tracking-tight mb-1">หมวดหมู่</h2>
+    <div class="flex items-center gap-3 flex-wrap mb-1">
+      <h2 class="text-2xl sm:text-3xl font-black tracking-tight">หมวดหมู่</h2>
+      ${renderSourceSwitcherInline()}
+    </div>
     <p class="text-sm text-zinc-500 mb-5">เลือกแนวที่ชอบ</p>
-    <div id="catBar" class="flex gap-2 flex-wrap pb-2 mb-5"></div>
+    <div id="catBar" class="space-y-3 pb-2 mb-5"></div>
     <div id="msg"></div>
     <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4"></div>
   `);
+  attachSourceSwitcherEvents();
   const bar = $('#catBar');
-  bar.innerHTML = '<div class="skeleton h-8 w-20 rounded-full"></div>'.repeat(12);
+  bar.innerHTML = '<div class="flex gap-2 flex-wrap"><div class="skeleton h-8 w-20 rounded-full"></div></div>'.repeat(2);
 
-  let cats = [];
-  try { cats = await apiGet('/genres'); }
-  catch (e) {
+  // โหลด genres ตาม source ปัจจุบัน — 'all' = ทั้งสอง group, อื่น = group เดียว
+  const src = getSource();
+  const sourcesToLoad = src === 'all' ? API_SOURCES.slice() : [src];
+  const groups = [];  // { source, cats[] | err }
+  const results = await Promise.allSettled(sourcesToLoad.map(s => apiGet('/genres', s)));
+  results.forEach((r, i) => {
+    const source = sourcesToLoad[i];
+    if (r.status === 'fulfilled') {
+      const cats = (Array.isArray(r.value) ? r.value : []).map(c => ({ ...c, __source: source }));
+      cats.sort((a, b) => String(a.name).localeCompare(String(b.name), 'th'));
+      groups.push({ source, cats });
+    } else {
+      groups.push({ source, cats: [], err: r.reason });
+    }
+  });
+  const allCats = groups.flatMap(g => g.cats);
+  if (!allCats.length) {
     bar.innerHTML = '';
-    $('#msg').innerHTML = errorBanner(e, { title: 'โหลดหมวดหมู่ไม่สำเร็จ', retryId: 'retryBtn' });
+    $('#msg').innerHTML = errorBanner(groups[0]?.err || new Error('no genres'), { title: 'โหลดหมวดหมู่ไม่สำเร็จ', retryId: 'retryBtn' });
     const btn = $('#retryBtn'); if (btn) btn.onclick = () => location.reload();
     return;
   }
-  cats.sort((a, b) => a.name.localeCompare(b.name, 'th'));
-  const initialId = qs('id') || (cats[0]?.id);
-  bar.innerHTML = cats.map(c =>
-    `<button data-id="${c.id}" class="chip cat-btn px-3 py-1.5 text-sm rounded-full bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 font-medium ${String(c.id) === String(initialId) ? 'active' : ''}">${escapeHtml(c.name)}</button>`
-  ).join('');
-  $$('.cat-btn').forEach(b => b.onclick = () => loadCategory(b.dataset.id, cats));
-  if (initialId) loadCategory(initialId, cats);
+
+  const initialId = qs('id');
+  const initialSrc = qs('src') || (initialId ? null : groups[0].source);
+  let activeCat = initialId
+    ? allCats.find(c => String(c.id) === String(initialId) && (!initialSrc || c.__source === initialSrc))
+      || allCats.find(c => String(c.id) === String(initialId))
+    : groups[0].cats[0];
+
+  bar.innerHTML = groups.map(g => {
+    if (!g.cats.length) {
+      return `<div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs px-2 py-0.5 rounded ${SOURCE_BADGE_CLS[g.source]} text-white font-bold">${escapeHtml(SOURCE_LABELS[g.source] || g.source)}</span>
+        <span class="text-xs text-red-400">โหลดไม่สำเร็จ${g.err?.message ? ': ' + escapeHtml(g.err.message) : ''}</span>
+      </div>`;
+    }
+    return `
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs px-2 py-0.5 rounded ${SOURCE_BADGE_CLS[g.source]} text-white font-bold">${escapeHtml(SOURCE_LABELS[g.source] || g.source)}</span>
+          <span class="text-xs text-zinc-500">${g.cats.length} หมวด</span>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          ${g.cats.map(c => {
+            const isActive = activeCat && String(c.id) === String(activeCat.id) && c.__source === activeCat.__source;
+            return `<button data-id="${escapeHtml(String(c.id))}" data-src="${escapeHtml(c.__source)}" class="chip cat-btn px-3 py-1.5 text-sm rounded-full bg-zinc-800/80 hover:bg-zinc-700 text-zinc-300 font-medium ${isActive ? 'active' : ''}">${escapeHtml(c.name)}</button>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }).join('');
+
+  $$('.cat-btn').forEach(b => b.onclick = () => {
+    const cat = allCats.find(c => String(c.id) === b.dataset.id && c.__source === b.dataset.src);
+    if (cat) loadCategory(cat, allCats);
+  });
+  if (activeCat) loadCategory(activeCat, allCats);
 }
 
-async function loadCategory(id, cats) {
-  history.replaceState(null, '', `/category?id=${encodeURIComponent(id)}`);
-  $$('.cat-btn').forEach(b => b.classList.toggle('active', b.dataset.id === String(id)));
+async function loadCategory(cat, allCats) {
+  const id = cat.id;
+  const source = cat.__source;
+  history.replaceState(null, '', `/category?id=${encodeURIComponent(id)}&src=${encodeURIComponent(source)}`);
+  $$('.cat-btn').forEach(b => b.classList.toggle('active', b.dataset.id === String(id) && b.dataset.src === source));
   const grid = $('#grid');
   const msg = $('#msg');
   grid.innerHTML = skeletonGrid();
   msg.innerHTML = '';
   try {
-    const res = await apiGet(`/genre/${encodeURIComponent(id)}?page=1&page_size=${PAGE_SIZE}`);
-    const list = pickList(res);
-    const cat = cats.find(c => String(c.id) === String(id));
+    const res = await apiGet(`/genre/${encodeURIComponent(id)}?page=1&page_size=${PAGE_SIZE}`, source);
+    const list = pickList(tagSource(res, source));
     const total = res?.total ? ` (ทั้งหมด ${res.total.toLocaleString()})` : '';
-    msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3"><strong class="text-zinc-200">${escapeHtml(cat?.name || '')}</strong> • ${list.length} เรื่อง${total}</div>`;
+    msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3"><span class="text-xs px-2 py-0.5 rounded ${SOURCE_BADGE_CLS[source]} text-white font-bold mr-2">${escapeHtml(SOURCE_LABELS[source] || source)}</span><strong class="text-zinc-200">${escapeHtml(cat.name || '')}</strong> • ${list.length} เรื่อง${total}</div>`;
     renderGrid(grid, list);
   } catch (e) {
     grid.innerHTML = '';
     msg.innerHTML = errorBanner(e, { title: 'โหลดหมวด ' + id + ' ไม่สำเร็จ', retryId: 'retryBtn' });
-    const btn = $('#retryBtn'); if (btn) btn.onclick = () => loadCategory(id, cats);
+    const btn = $('#retryBtn'); if (btn) btn.onclick = () => loadCategory(cat, allCats);
   }
 }
 
@@ -670,6 +987,7 @@ async function initDetailPage() {
   document.body.insertAdjacentHTML('beforeend', renderFooter());
 
   const bookId = qs('bookId');
+  const source = qs('src') || 'dramabox';
   if (!bookId) {
     $('#content').innerHTML = errorBanner({ message: 'URL ต้องมี ?bookId=xxx' }, { title: 'พารามิเตอร์ไม่ครบ' });
     return;
@@ -692,15 +1010,7 @@ async function initDetailPage() {
     <div class="skeleton h-8 w-2/3 rounded mb-3"></div>
     <div class="skeleton h-4 w-1/2 rounded mb-2"></div>`;
 
-  const [detailRes, episodesRes] = await Promise.allSettled([
-    apiGet(`/detail?bookId=${encodeURIComponent(bookId)}`),
-    apiGet(`/allepisode?bookId=${encodeURIComponent(bookId)}`),
-  ]);
-
-  const detail = detailRes.status === 'fulfilled' ? detailRes.value : null;
-  const detailErr = detailRes.status === 'rejected' ? detailRes.reason : null;
-  const episodes = episodesRes.status === 'fulfilled' ? (Array.isArray(episodesRes.value) ? episodesRes.value : []) : [];
-  const epsErr = episodesRes.status === 'rejected' ? episodesRes.reason : null;
+  const { detail, episodes, detailErr, epsErr } = await fetchDetailAndEpisodes(bookId, source);
 
   const fallbackN = parseInt(qs('n') || '0', 10);
   const d = detail || { bookId, bookName: '(ไม่ทราบชื่อ)', chapterCount: 0 };
@@ -714,13 +1024,14 @@ async function initDetailPage() {
 
   // ซ่อน 💰 สำหรับ admin/vip หรือเมื่อเปิดโปรโมชั่นดูฟรีทั้งเว็บ
   const hidePaywallIcon = publicConfig.isFreeMode() || (auth.user && (auth.user.role === 'admin' || auth.user.role === 'vip'));
+  const srcQ = source === 'dramabox' ? '' : `&src=${encodeURIComponent(source)}`;
   let chaptersHtml = '';
   if (count > 0) {
     let buttons = '';
     for (let i = 1; i <= count; i++) {
       const ep = episodes.find(e => e.chapterIndex === i);
       const charge = (!hidePaywallIcon && ep?.isCharge) ? '<span class="absolute top-0.5 right-1 text-[9px]">💰</span>' : '';
-      buttons += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${count}" class="relative px-3 py-2 bg-zinc-800 hover:bg-red-600 hover:text-white rounded text-sm text-center transition-colors">EP ${i}${charge}</a>`;
+      buttons += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${count}${srcQ}" class="relative px-3 py-2 bg-zinc-800 hover:bg-red-600 hover:text-white rounded text-sm text-center transition-colors">EP ${i}${charge}</a>`;
     }
     chaptersHtml = `<div class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">${buttons}</div>`;
   } else {
@@ -733,14 +1044,14 @@ async function initDetailPage() {
     try {
       const h = await backendGet(`/api/history/latest?bookId=${encodeURIComponent(bookId)}`);
       if (h.entry?.index) {
-        resumeHtml = `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${h.entry.index}${count ? `&n=${count}` : ''}" class="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black py-2.5 rounded-lg font-bold text-center">▶ ดูต่อ EP ${h.entry.index}</a>`;
+        resumeHtml = `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${h.entry.index}${count ? `&n=${count}` : ''}${srcQ}" class="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black py-2.5 rounded-lg font-bold text-center">▶ ดูต่อ EP ${h.entry.index}</a>`;
       }
     } catch {}
   }
 
   $('#content').innerHTML = `
-    ${detailErr ? errorBanner(detailErr, { title: '/detail ตอบ error' }) : ''}
-    ${epsErr ? errorBanner(epsErr, { title: '/allepisode ตอบ error' }) : ''}
+    ${detailErr ? errorBanner(detailErr, { title: 'detail ตอบ error' }) : ''}
+    ${epsErr ? errorBanner(epsErr, { title: 'episodes ตอบ error' }) : ''}
     <div class="bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 slide-up">
       <div class="relative">
         <div class="aspect-[16/9] bg-zinc-950 overflow-hidden">
@@ -765,6 +1076,7 @@ async function initDetailPage() {
           <div class="bg-zinc-800/50 rounded p-3">
             <div class="text-zinc-500">Book ID <span class="text-red-400">(admin)</span></div>
             <div class="font-mono text-zinc-200 break-all">${escapeHtml(bookId)}</div>
+            <div class="text-[10px] text-zinc-500 mt-1">source: <span class="${SOURCE_BADGE_CLS[source]} text-white px-1.5 py-0.5 rounded font-bold">${escapeHtml(SOURCE_LABELS[source] || source)}</span></div>
           </div>
           <div class="bg-zinc-800/50 rounded p-3">
             <div class="text-zinc-500">ตอนทั้งหมด</div>
@@ -773,7 +1085,7 @@ async function initDetailPage() {
         </div>` : ''}
         <div class="flex gap-2 mb-6">
           ${resumeHtml}
-          <a href="/play?bookId=${encodeURIComponent(bookId)}&index=1${count > 0 ? `&n=${count}` : ''}" class="flex-1 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white py-2.5 rounded-lg font-semibold text-center">▶ เล่น EP1</a>
+          <a href="/play?bookId=${encodeURIComponent(bookId)}&index=1${count > 0 ? `&n=${count}` : ''}${srcQ}" class="flex-1 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white py-2.5 rounded-lg font-semibold text-center">▶ เล่น EP1</a>
           ${auth.user?.role === 'admin' ? `<button id="copyIdBtn" class="px-4 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-sm">📋 คัดลอก ID</button>` : ''}
         </div>
         <h3 class="font-bold text-lg mb-3">เลือกตอน</h3>
@@ -812,6 +1124,7 @@ async function initPlayPage() {
   document.body.insertAdjacentHTML('beforeend', renderFooter());
 
   const bookId = qs('bookId');
+  const source = qs('src') || 'dramabox';
   const index = parseInt(qs('index') || '1', 10);
 
   if (!bookId || isNaN(index) || index < 1) {
@@ -819,8 +1132,10 @@ async function initPlayPage() {
     return;
   }
 
+  const srcQ = source === 'dramabox' ? '' : `&src=${encodeURIComponent(source)}`;
+
   main.innerHTML = `
-    <a href="/detail?bookId=${encodeURIComponent(bookId)}" class="text-sm text-zinc-400 hover:text-white mb-4 inline-block">← กลับหน้ารายละเอียด</a>
+    <a href="/detail?bookId=${encodeURIComponent(bookId)}${srcQ}" class="text-sm text-zinc-400 hover:text-white mb-4 inline-block">← กลับหน้ารายละเอียด</a>
     <div class="video-wrap mb-4 fade-in" id="videoWrap">
       <div class="w-full h-full flex items-center justify-center text-zinc-500 text-sm">
         <div class="text-center">
@@ -837,12 +1152,8 @@ async function initPlayPage() {
     </div>
   `;
 
-  // 1) Fetch detail (for bookName) + episode list parallel
-  const [detailRes, episodesRes] = await Promise.allSettled([
-    apiGet(`/detail?bookId=${encodeURIComponent(bookId)}`),
-    apiGet(`/allepisode?bookId=${encodeURIComponent(bookId)}`),
-  ]);
-  const detail = detailRes.status === 'fulfilled' ? detailRes.value : null;
+  // 1) Fetch detail + episodes (Melolo: 1 fetch / DramaBox: 2 fetches parallel)
+  const { detail, episodes, epsErr } = await fetchDetailAndEpisodes(bookId, source);
   const bookName = detail?.bookName || '(ไม่ทราบชื่อ)';
   const isAdmin = auth.user?.role === 'admin';
   const u = auth.user;
@@ -862,14 +1173,13 @@ async function initPlayPage() {
       <h2 class="text-xl sm:text-2xl font-black">EP ${index} — <span class="text-zinc-300">${escapeHtml(bookName)}</span></h2>
       ${userStatusHtml}
     </div>
-    ${isAdmin ? `<div class="text-xs text-zinc-500 font-mono mt-1">bookId: ${escapeHtml(bookId)} <span class="text-red-400">(admin)</span></div>` : ''}
+    ${isAdmin ? `<div class="text-xs text-zinc-500 font-mono mt-1">bookId: ${escapeHtml(bookId)} <span class="text-red-400">(admin)</span> <span class="ml-2 ${SOURCE_BADGE_CLS[source]} text-white px-1.5 py-0.5 rounded font-bold">${escapeHtml(SOURCE_LABELS[source] || source)}</span></div>` : ''}
   `;
 
-  if (episodesRes.status === 'rejected') {
-    showPlayerError('โหลดรายการตอนไม่สำเร็จ', episodesRes.reason?.message || '');
+  if (epsErr) {
+    showPlayerError('โหลดรายการตอนไม่สำเร็จ', epsErr.message || '');
     return;
   }
-  const episodes = Array.isArray(episodesRes.value) ? episodesRes.value : [];
 
   const ep = episodes.find(e => e.chapterIndex === index);
   const total = episodes.length || parseInt(qs('n') || '0', 10);
@@ -883,12 +1193,12 @@ async function initPlayPage() {
       const e = episodes.find(x => x.chapterIndex === i);
       const charge = (!hidePaywallIcon && e?.isCharge) ? '<span class="text-[9px] text-amber-400 ml-0.5">💰</span>' : '';
       const cls = i === index ? 'bg-red-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300';
-      html += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${total}" data-idx="${i}" class="${cls} px-3 py-1.5 rounded text-sm font-medium">${i}${charge}</a>`;
+      html += `<a href="/play?bookId=${encodeURIComponent(bookId)}&index=${i}&n=${total}${srcQ}" data-idx="${i}" class="${cls} px-3 py-1.5 rounded text-sm font-medium">${i}${charge}</a>`;
     }
     $('#navEp').innerHTML = html;
     $$('#navEp a').forEach(a => a.onclick = ev => {
       ev.preventDefault();
-      goToEpisode(parseInt(a.dataset.idx, 10), { bookId, total, episodes, detail });
+      goToEpisode(parseInt(a.dataset.idx, 10), { bookId, source, total, episodes, detail });
     });
   }
 
@@ -897,7 +1207,7 @@ async function initPlayPage() {
   // Popstate (back/forward) → transition in place
   window.addEventListener('popstate', () => {
     const newIdx = parseInt(qs('index') || '1', 10);
-    goToEpisode(newIdx, { bookId, total, episodes, detail });
+    goToEpisode(newIdx, { bookId, source, total, episodes, detail });
   });
 
   // 2) Access check (server-side)
@@ -919,26 +1229,28 @@ async function initPlayPage() {
     // Log history ก่อนเล่น (ต้อง login)
     if (u) {
       backendPost('/api/history/log', {
-        bookId, index: ep.chapterIndex,
+        bookId, source, index: ep.chapterIndex,
         bookName: detail?.bookName || '',
         cover: detail?.coverWap || detail?.cover || '',
       }).catch(() => {});
     }
-    return playEpisode(ep, { bookId, total, episodes, detail });
+    return playEpisode(ep, { bookId, source, total, episodes, detail });
   }
 
   // 4) Show gate (login / upgrade / pay)
-  return renderAccessGate(bookId, index, ep, access, u);
+  return renderAccessGate(bookId, index, ep, access, u, source);
 }
 
 // In-place ตอนถัดไป — ไม่โหลดหน้าใหม่ (TikTok-style smooth transition)
 async function goToEpisode(newIndex, ctx) {
-  const { bookId, total, episodes, detail } = ctx;
+  const { bookId, source, total, episodes, detail } = ctx;
+  const src = source || 'dramabox';
+  const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
   const ep = episodes.find(e => e.chapterIndex === newIndex);
   if (!ep) return;
 
   // Update URL ไม่ reload
-  const newUrl = `/play?bookId=${encodeURIComponent(bookId)}&index=${newIndex}&n=${total}`;
+  const newUrl = `/play?bookId=${encodeURIComponent(bookId)}&index=${newIndex}&n=${total}${srcQ}`;
   if (location.pathname + location.search !== newUrl) {
     history.pushState({ index: newIndex }, '', newUrl);
   }
@@ -960,7 +1272,7 @@ async function goToEpisode(newIndex, ctx) {
       <h2 class="text-xl sm:text-2xl font-black">EP ${newIndex} — <span class="text-zinc-300">${escapeHtml(bookName)}</span></h2>
       ${userStatusHtml}
     </div>
-    ${isAdmin ? `<div class="text-xs text-zinc-500 font-mono mt-1">bookId: ${escapeHtml(bookId)} <span class="text-red-400">(admin)</span></div>` : ''}
+    ${isAdmin ? `<div class="text-xs text-zinc-500 font-mono mt-1">bookId: ${escapeHtml(bookId)} <span class="text-red-400">(admin)</span> <span class="ml-2 ${SOURCE_BADGE_CLS[src]} text-white px-1.5 py-0.5 rounded font-bold">${escapeHtml(SOURCE_LABELS[src] || src)}</span></div>` : ''}
   `;
 
   // Update nav highlight
@@ -983,13 +1295,13 @@ async function goToEpisode(newIndex, ctx) {
   if ((access.allowed && !effectivelyLocked) || isFree) {
     if (u) {
       backendPost('/api/history/log', {
-        bookId, index: newIndex,
+        bookId, source: src, index: newIndex,
         bookName, cover: detail?.coverWap || detail?.cover || '',
       }).catch(() => {});
     }
     return playEpisode(ep, ctx);
   }
-  return renderAccessGate(bookId, newIndex, ep, access, u);
+  return renderAccessGate(bookId, newIndex, ep, access, u, src);
 }
 
 function showPlayerError(title, detail) {
@@ -1004,8 +1316,10 @@ function showPlayerError(title, detail) {
     </div>`;
 }
 
-function renderAccessGate(bookId, index, ep, access, user) {
+function renderAccessGate(bookId, index, ep, access, user, source) {
   const reason = access.reason || (ep.isCharge ? 'need_coin' : 'unknown');
+  const src = source || 'dramabox';
+  const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
 
   if (reason === 'hidden') {
     $('#videoWrap').innerHTML = `
@@ -1086,6 +1400,15 @@ function renderAccessGate(bookId, index, ep, access, user) {
 }
 
 async function playEpisode(ep, ctx) {
+  // Lazy-fetch URL สำหรับ source ที่ไม่ส่ง URL พร้อมใน episode list (Melolo)
+  if (ctx?.source && !ep.videoUrl && !ep['1080p'] && !ep['540p']) {
+    try {
+      await ensureEpisodeUrl(ep, ctx.bookId, ctx.source);
+    } catch (e) {
+      showPlayerError('โหลด URL วิดีโอไม่สำเร็จ', e.message);
+      return;
+    }
+  }
   // ลอง URL ตามลำดับ — ไม่แสดง URL/quality ให้ user เห็น (ป้องกัน copy/download)
   const urls = [ep['1080p'], ep.videoUrl, ep['540p']].filter(Boolean);
   if (!urls.length) {
@@ -1125,17 +1448,31 @@ async function playEpisode(ep, ctx) {
   setupAutoNext(ep, video, ctx, ctrl);
 }
 
+function swipeToast(text) {
+  let t = document.getElementById('swipeToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'swipeToast';
+    t.className = 'fixed left-1/2 top-1/3 -translate-x-1/2 px-5 py-3 bg-black/80 text-white text-lg font-bold rounded-xl pointer-events-none z-[9999] transition-opacity';
+    document.body.appendChild(t);
+  }
+  t.textContent = text;
+  t.style.opacity = '1';
+  clearTimeout(t._fade);
+  t._fade = setTimeout(() => { t.style.opacity = '0'; }, 700);
+}
+
 function setupAutoNext(ep, video, ctx, ctrl) {
   if (!ctx) return;
-  const { bookId, total, episodes } = ctx;
+  const { bookId, source, total, episodes } = ctx;
   const nextEp = episodes.find(e => e.chapterIndex === ep.chapterIndex + 1);
   const prevEp = episodes.find(e => e.chapterIndex === ep.chapterIndex - 1);
   let autoNext = localStorage.getItem('mkw_autonext') !== '0'; // default on
-
   // Preload วิดีโอตอนถัดไปไว้ใน browser cache → swap แล้วเริ่มเล่นได้ทันที
   if (nextEp) {
-    const nextUrl = nextEp['1080p'] || nextEp.videoUrl || nextEp['540p'];
-    if (nextUrl) {
+    const setupPreload = () => {
+      const nextUrl = nextEp['1080p'] || nextEp.videoUrl || nextEp['540p'];
+      if (!nextUrl) return;
       let pre = document.getElementById('preloadNext');
       if (!pre) {
         pre = document.createElement('video');
@@ -1146,6 +1483,12 @@ function setupAutoNext(ep, video, ctx, ctrl) {
         document.body.appendChild(pre);
       }
       if (pre.src !== nextUrl) pre.src = nextUrl;
+    };
+    if (nextEp.videoUrl || nextEp['1080p'] || nextEp['540p']) {
+      setupPreload();
+    } else if (source) {
+      // Lazy fetch URL ของ next ep แล้ว preload (เฉพาะ Melolo)
+      ensureEpisodeUrl(nextEp, bookId, source).then(setupPreload).catch(() => {});
     }
   }
 
@@ -1169,6 +1512,33 @@ function setupAutoNext(ep, video, ctx, ctrl) {
   };
   if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
   if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
+
+  // Swipe gesture (TikTok-style) — ขึ้น=ep ถัดไป / ลง=ep ก่อน
+  const wrap = $('#videoWrap');
+  if (wrap && (nextEp || prevEp)) {
+    let sy = 0, sx = 0, st = 0;
+    wrap.addEventListener('touchstart', e => {
+      if (e.touches.length !== 1) { st = 0; return; }
+      const t = e.touches[0];
+      sy = t.clientY; sx = t.clientX; st = Date.now();
+    }, { passive: true, signal: ctrl?.signal });
+    wrap.addEventListener('touchend', e => {
+      if (!st || e.changedTouches.length !== 1) return;
+      const t = e.changedTouches[0];
+      const dy = t.clientY - sy;
+      const dx = t.clientX - sx;
+      const dt = Date.now() - st;
+      st = 0;
+      if (dt > 600 || Math.abs(dy) < 60 || Math.abs(dy) < Math.abs(dx) * 1.5) return;
+      if (dy < 0 && nextEp) {
+        swipeToast(`▲ EP ${nextEp.chapterIndex}`);
+        goToEpisode(nextEp.chapterIndex, ctx);
+      } else if (dy > 0 && prevEp) {
+        swipeToast(`▼ EP ${prevEp.chapterIndex}`);
+        goToEpisode(prevEp.chapterIndex, ctx);
+      }
+    }, { passive: true, signal: ctrl?.signal });
+  }
 
   if (!nextEp) return;
 
@@ -1530,22 +1900,27 @@ async function renderHistoryList() {
 
   list.innerHTML = `
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-      ${history.map(h => `
+      ${history.map(h => {
+        const src = h.source || 'dramabox';
+        const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
+        const srcBadge = `<div class="absolute top-2 right-2 px-2 py-0.5 ${SOURCE_BADGE_CLS[src] || 'bg-zinc-700'} text-white text-[10px] font-bold rounded shadow">${escapeHtml(SOURCE_LABELS[src] || src.toUpperCase())}</div>`;
+        return `
         <div class="relative group">
-          <a href="/play?bookId=${encodeURIComponent(h.bookId)}&index=${h.index}" class="card block">
+          <a href="/play?bookId=${encodeURIComponent(h.bookId)}&index=${h.index}${srcQ}" class="card block">
             <div class="relative card-img rounded-lg overflow-hidden bg-zinc-900">
               <img src="${escapeHtml(h.cover || '')}" class="w-full h-full object-cover" loading="lazy" onerror="this.style.opacity=0"/>
               <div class="absolute inset-0 gradient-fade"></div>
               <div class="absolute top-2 left-2 px-2 py-0.5 bg-amber-500 text-black text-[11px] font-bold rounded">EP ${h.index}</div>
+              ${srcBadge}
               <div class="absolute bottom-2 left-2 right-2">
                 <div class="text-white font-bold text-sm leading-tight glow-text line-clamp-2">${escapeHtml(h.bookName || '(ไม่ทราบชื่อ)')}</div>
                 <div class="text-zinc-300 text-[11px] mt-0.5 glow-text">${escapeHtml((h.at || '').slice(0, 10))}</div>
               </div>
             </div>
           </a>
-          <button class="del-hist absolute top-2 right-2 w-7 h-7 bg-black/70 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity sm:opacity-70" data-bid="${escapeHtml(h.bookId)}" data-name="${escapeHtml(h.bookName || '')}" title="ลบจากประวัติ">✕</button>
-        </div>
-      `).join('')}
+          <button class="del-hist absolute top-10 right-2 w-7 h-7 bg-black/70 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-sm opacity-0 group-hover:opacity-100 transition-opacity sm:opacity-70" data-bid="${escapeHtml(h.bookId)}" data-name="${escapeHtml(h.bookName || '')}" title="ลบจากประวัติ">✕</button>
+        </div>`;
+      }).join('')}
     </div>
   `;
 
@@ -1641,4 +2016,137 @@ async function initProfilePage() {
       msg.classList.add('text-red-400');
     }
   };
+}
+
+// ============================================================
+// Privacy / Terms — เนื้อหาดัดแปลงจาก seriesjeen.online ให้เข้ากับ MKW Movies
+// ============================================================
+
+async function initPrivacyPage() {
+  await mountPage('', `
+    <article class="max-w-3xl mx-auto prose-invert">
+      <h1 class="text-3xl sm:text-4xl font-black mb-2">นโยบายความเป็นส่วนตัว</h1>
+      <p class="text-sm text-zinc-500 mb-1">${BRAND}</p>
+      <p class="text-xs text-zinc-600 mb-8">อัปเดตล่าสุด: 2 พฤษภาคม 2569</p>
+
+      <p class="text-sm text-zinc-300 leading-relaxed mb-6">${BRAND} (โดย KTCMKW) ให้ความสำคัญกับความเป็นส่วนตัวของผู้ใช้ เอกสารนี้อธิบายวิธีที่เราเก็บ ใช้ เปิดเผย และปกป้องข้อมูลของท่าน โดยอ้างอิงตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562 (PDPA) ของประเทศไทย</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">1. ข้อมูลที่เราเก็บ</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li><strong class="text-zinc-100">ข้อมูลบัญชี:</strong> username, รหัสผ่าน (เก็บแบบ hash), อีเมล Google (กรณี login ผ่าน OAuth)</li>
+        <li><strong class="text-zinc-100">ข้อมูลการใช้งาน:</strong> ประวัติการรับชม รายการที่ปลดล็อก ตอนล่าสุดที่ดูค้างไว้</li>
+        <li><strong class="text-zinc-100">ข้อมูลธุรกรรม:</strong> การเติม NSV Coin, การซื้อ VIP, สลิปโอนเงินที่อัพโหลดให้ admin ตรวจ</li>
+        <li><strong class="text-zinc-100">ข้อมูลทางเทคนิค:</strong> IP address, User-Agent, เวลาเข้าใช้งาน (สำหรับตรวจการใช้งานผิดปกติ)</li>
+        <li><strong class="text-zinc-100">Local Storage:</strong> token เข้าสู่ระบบ, การตั้งค่าแหล่งซีรีส์ (DramaBox / Melolo), ค่าจดจำการเล่นอัตโนมัติ</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">2. วัตถุประสงค์การใช้ข้อมูล</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>ให้บริการรับชมซีรีส์และบันทึกความคืบหน้าการดู</li>
+        <li>ยืนยันตัวตนผ่าน username/password หรือ Google OAuth</li>
+        <li>ดำเนินธุรกรรมเหรียญ NSV และสมาชิก VIP</li>
+        <li>ปรับปรุงคุณภาพบริการและประสบการณ์การใช้งาน</li>
+        <li>ป้องกันการใช้งานผิดปกติ การโจรกรรมบัญชี และการละเมิดข้อกำหนด</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">3. การแชร์ข้อมูลกับบุคคลที่สาม</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li><strong class="text-zinc-100">Google:</strong> เฉพาะข้อมูลที่จำเป็นสำหรับ OAuth login (อีเมล + ชื่อโปรไฟล์)</li>
+        <li><strong class="text-zinc-100">ผู้ให้บริการแหล่งซีรีส์ (DramaBox, Melolo ผ่าน seriesjeen.online):</strong> ส่งคำขอแบบไม่ระบุตัวตน — ผู้ให้บริการต้นทางจะไม่ทราบว่าเป็นผู้ใช้คนใดของเรา</li>
+        <li><strong class="text-zinc-100">หน่วยงานราชการ:</strong> เปิดเผยตามที่กฎหมายไทยกำหนดเท่านั้น</li>
+      </ul>
+      <p class="text-sm text-zinc-300 mt-3"><strong class="text-zinc-100">เราไม่ขายข้อมูลของท่านให้ผู้ใด</strong></p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">4. สิทธิของเจ้าของข้อมูล</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>ขอเข้าถึงและขอสำเนาข้อมูลของท่าน</li>
+        <li>ขอแก้ไขข้อมูลที่ไม่ถูกต้อง (ผ่านหน้า /profile)</li>
+        <li>ขอให้ลบข้อมูล / บัญชี (Right to be Forgotten)</li>
+        <li>ขอให้ระงับหรือคัดค้านการประมวลผล</li>
+        <li>เพิกถอนความยินยอมเมื่อใดก็ได้</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">5. ระยะเวลาเก็บข้อมูล</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">ข้อมูลบัญชีจะถูกเก็บตราบเท่าที่บัญชียังใช้งาน หรือจนกว่าผู้ใช้จะขอให้ลบ ข้อมูลธุรกรรมจะเก็บตามที่กฎหมายภาษีกำหนด หลังจากนั้นจะถูกลบออก</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">6. การรักษาความปลอดภัย</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>การเชื่อมต่อเข้ารหัสด้วย HTTPS / TLS</li>
+        <li>รหัสผ่านเก็บในรูปแบบ hash (ไม่ใช่ plain text)</li>
+        <li>Session token หมดอายุได้ — admin บังคับ logout จากเครื่องอื่นได้</li>
+        <li>จำกัดการเข้าถึงข้อมูลเฉพาะ admin ของระบบ</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">7. ติดต่อ</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">หากมีคำถามเกี่ยวกับข้อมูลส่วนบุคคลหรือต้องการใช้สิทธิตาม PDPA กรุณาติดต่อ admin ผ่านช่องทางที่ระบุในเว็บไซต์ ทีมงานจะตอบกลับภายใน 30 วัน</p>
+
+      <div class="mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-500">
+        <p>เอกสารนี้ดัดแปลงจากนโยบายความเป็นส่วนตัวของ seriesjeen.online เพื่อให้เข้ากับการให้บริการของ ${BRAND}</p>
+      </div>
+    </article>
+  `, 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8 sm:py-12');
+}
+
+async function initTermsPage() {
+  await mountPage('', `
+    <article class="max-w-3xl mx-auto">
+      <h1 class="text-3xl sm:text-4xl font-black mb-2">ข้อกำหนดการใช้งาน</h1>
+      <p class="text-sm text-zinc-500 mb-1">${BRAND}</p>
+      <p class="text-xs text-zinc-600 mb-8">อัปเดตล่าสุด: 2 พฤษภาคม 2569</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">1. การยอมรับข้อกำหนด</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">การสมัครสมาชิก เข้าสู่ระบบ หรือใช้งาน ${BRAND} ในรูปแบบใดก็ตาม ถือว่าท่านได้อ่านและยอมรับข้อกำหนดทั้งหมดในเอกสารนี้ หากไม่ยอมรับ กรุณาหยุดใช้บริการทันที</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">2. คุณสมบัติผู้ใช้</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>อายุขั้นต่ำ 13 ปี (อายุต่ำกว่า 18 ปีต้องได้รับความยินยอมจากผู้ปกครอง)</li>
+        <li>ห้ามใช้งานหากบัญชีของท่านถูกระงับหรือยกเลิก</li>
+        <li>ต้องให้ข้อมูลที่ถูกต้องและเป็นปัจจุบัน</li>
+        <li>ผู้ใช้รับผิดชอบความปลอดภัยของบัญชีตนเอง — ห้ามแชร์รหัสผ่าน</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">3. เนื้อหาและการรับชม</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>เว็บไซต์รวบรวมซีรีส์จากหลายแพลตฟอร์ม (DramaBox, Melolo) ผ่าน API ที่ได้รับอนุญาต</li>
+        <li>บางตอนรับชมได้ฟรี ส่วนที่เหลือต้องใช้ NSV Coin หรือสมาชิก VIP</li>
+        <li>เราสงวนสิทธิ์เปลี่ยนแปลง เพิ่ม หรือถอนเนื้อหาได้ตลอดเวลาโดยไม่แจ้งล่วงหน้า</li>
+        <li>ห้ามบันทึก คัดลอก ทำซ้ำ หรือเผยแพร่เนื้อหาในเชิงพาณิชย์</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">4. NSV Coin และการชำระเงิน</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>1 บาท = 1 NSV Coin (ใช้ปลดล็อกตอนละ 50 coin หรือซื้อ VIP)</li>
+        <li>ชำระเงินผ่านการโอนและอัพโหลดสลิปให้ admin ตรวจสอบก่อนเติมเหรียญ</li>
+        <li>เหรียญที่ซื้อแล้วไม่สามารถขอคืนเงินได้ ยกเว้นกรณีที่ระบบมีข้อผิดพลาด</li>
+        <li>เหรียญและสมาชิก VIP ใช้ได้เฉพาะในเว็บไซต์นี้ ห้ามโอนหรือขายต่อ</li>
+        <li>ตอนที่ปลดล็อกแล้วจะเข้าถึงได้ตราบที่บัญชียังใช้งาน</li>
+        <li>ราคาแพ็กเกจและโปรโมชั่นอาจเปลี่ยนแปลงได้โดยไม่แจ้งล่วงหน้า</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">5. พฤติกรรมที่ห้าม</h2>
+      <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
+        <li>ใช้บริการเพื่อกระทำผิดกฎหมายหรือละเมิดสิทธิของผู้อื่น</li>
+        <li>ใช้ bot, scraper, หรือเครื่องมืออัตโนมัติเพื่อโกงระบบ</li>
+        <li>สร้างบัญชีปลอม ใช้บัญชีของผู้อื่น หรือแชร์บัญชีกับบุคคลที่สาม</li>
+        <li>ขายต่อบัญชี เหรียญ NSV หรือสมาชิก VIP</li>
+        <li>ละเมิดลิขสิทธิ์ หรือเผยแพร่เนื้อหาผิดศีลธรรม</li>
+      </ul>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">6. การระงับและยกเลิกบัญชี</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">เราสงวนสิทธิ์ระงับหรือยกเลิกบัญชีของท่านได้ทันทีโดยไม่แจ้งล่วงหน้า หากตรวจพบการละเมิดข้อกำหนด เหรียญและสิทธิ์ต่างๆ ในบัญชีจะถูกยกเลิกโดยไม่คืนเงิน</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">7. ข้อจำกัดความรับผิด</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">บริการให้ "ตามสภาพ" (As-is) เราไม่รับผิดต่อความเสียหายโดยอ้อม การหยุดชะงักของบริการ การสูญเสียข้อมูล หรือเนื้อหาที่ถูกแก้ไข/ระงับโดยแพลตฟอร์มต้นทาง ความรับผิดรวมจำกัดไม่เกินจำนวนเงินที่ผู้ใช้ชำระภายใน 12 เดือนล่าสุด</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">8. การเปลี่ยนแปลงข้อกำหนด</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">เราอาจปรับปรุงข้อกำหนดได้ตามความเหมาะสม โดยจะประกาศบนเว็บไซต์ การใช้งานต่อหลังจากนั้นถือว่าท่านยอมรับฉบับใหม่</p>
+
+      <h2 class="text-xl font-bold mt-8 mb-3">9. กฎหมายที่ใช้บังคับ</h2>
+      <p class="text-sm text-zinc-300 leading-relaxed">ข้อกำหนดนี้อยู่ภายใต้กฎหมายไทย ข้อพิพาทใดๆ ให้ดำเนินการที่ศาลไทยเท่านั้น</p>
+
+      <div class="mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-500">
+        <p>เอกสารนี้ดัดแปลงจากข้อกำหนดการใช้งานของ seriesjeen.online เพื่อให้เข้ากับการให้บริการของ ${BRAND}</p>
+      </div>
+    </article>
+  `, 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8 sm:py-12');
 }

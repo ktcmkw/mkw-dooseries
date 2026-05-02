@@ -1,4 +1,4 @@
-// MKW - dooseries — static + proxy + auth + admin backend
+// MKW Movies — static + proxy + auth + admin backend
 // Usage: node serve.js
 const http = require('http');
 const https = require('https');
@@ -1011,13 +1011,13 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'POST' && pathname === '/api/history/log') {
     if (!user) return unauthorized(res);
     const body = await readBody(req);
-    const { bookId, index, bookName, cover } = body;
+    const { bookId, index, bookName, cover, source } = body;
     if (!bookId || !index) return badRequest(res, 'ต้องมี bookId และ index');
     const u = data.users[user.username];
     u.history = u.history || [];
     // dedupe: ถ้ามี bookId นี้อยู่แล้ว → remove เก่าก่อน push ใหม่
     u.history = u.history.filter(h => h.bookId !== bookId);
-    u.history.unshift({ bookId, index: Number(index), bookName: bookName || '', cover: cover || '', at: new Date().toISOString() });
+    u.history.unshift({ bookId, index: Number(index), bookName: bookName || '', cover: cover || '', source: source || 'dramabox', at: new Date().toISOString() });
     if (u.history.length > 100) u.history = u.history.slice(0, 100);
     await writeData(data);
     return json(res, 200, { ok: true });
@@ -1071,6 +1071,7 @@ async function handleApi(req, res, pathname, query) {
     slip.status = 'approved';
     slip.approvedBy = user.username;
     slip.approvedAt = new Date().toISOString();
+    slip.image = '';  // เคลียร์ภาพหลัง approve — เก็บ metadata ไว้ดู audit
     data.topupHistory = data.topupHistory || [];
     data.topupHistory.push({ username: slip.username, packageId: 'slip:' + slip.id, coins: slip.amount, pricePaid: slip.amount, discount: null, at: slip.approvedAt });
     await writeData(data);
@@ -1084,6 +1085,7 @@ async function handleApi(req, res, pathname, query) {
     slip.status = 'rejected';
     slip.approvedBy = user.username;
     slip.approvedAt = new Date().toISOString();
+    slip.image = '';  // เคลียร์ภาพหลัง reject — เก็บ metadata ไว้ดู audit
     await writeData(data);
     return json(res, 200, { ok: true });
   }
@@ -1134,7 +1136,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`MKW - dooseries: http://localhost:${PORT}/`);
+  console.log(`MKW Movies: http://localhost:${PORT}/`);
   console.log(`Proxy: /proxy/* → https://${SERIESJEEN_HOST}/*`);
   console.log(`Data: ${DATA_FILE}`);
 });
