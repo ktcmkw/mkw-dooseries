@@ -1867,19 +1867,21 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
   // ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → popup ยืนยัน (video เล่นต่อปกติ)
   const wrap = $('#videoWrap');
   if ((nextEp || prevEp) && wrap) {
-    let sy = 0, sx = 0, active = false, pid = null;
+    let sy = 0, sx = 0, active = false, pid = null, fired = false;
     const isOnControls = tgt => tgt && tgt.closest && tgt.closest('#bottomBar, #qualityBtn, #qMenu, #centerPlay');
 
     const onDown = e => {
       if (isOnControls(e.target)) { active = false; return; }
-      sy = e.clientY; sx = e.clientX; active = true; pid = e.pointerId;
+      sy = e.clientY; sx = e.clientX; active = true; fired = false; pid = e.pointerId;
+      try { e.target.setPointerCapture && e.target.setPointerCapture(e.pointerId); } catch {}
     };
-    const onUp = e => {
-      if (!active || e.pointerId !== pid) return;
-      active = false;
+    const onMove = e => {
+      if (!active || fired || e.pointerId !== pid) return;
       const dy = e.clientY - sy;
       const dx = e.clientX - sx;
       if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx)) return;
+      fired = true;
+      active = false;
       const fb = wrap.querySelector('#seekFb');
       if (dy < 0 && prevEp) {
         if (fb) { fb.textContent = `↑ EP ${prevEp.chapterIndex}`; fb.style.opacity = '1'; setTimeout(() => { fb.style.opacity = '0'; }, 400); }
@@ -1889,9 +1891,11 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
         showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
       }
     };
+    const onEnd = () => { active = false; };
     wrap.addEventListener('pointerdown', onDown, { signal: ctrl?.signal });
-    window.addEventListener('pointerup', onUp, { signal: ctrl?.signal });
-    window.addEventListener('pointercancel', () => { active = false; }, { signal: ctrl?.signal });
+    wrap.addEventListener('pointermove', onMove, { signal: ctrl?.signal });
+    wrap.addEventListener('pointerup', onEnd, { signal: ctrl?.signal });
+    wrap.addEventListener('pointercancel', onEnd, { signal: ctrl?.signal });
   }
 
   if (!nextEp) return;
