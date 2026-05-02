@@ -1,7 +1,7 @@
 {
   "users": {
     "admin": {
-      "password": "admin",
+      "password": "admin2",
       "role": "admin",
       "coins": 9999999,
       "unlocked": [],
