@@ -1112,11 +1112,8 @@ async function initPlayPage() {
   await auth.refresh();
   await publicConfig.load();
   if (maintenanceGate()) return;
-  // Soft gate ใน freeMode: guest ต้อง login ก่อนเล่น (หลัง login แล้วดูฟรีทุกอย่าง)
-  if (!auth.user && publicConfig.isFreeMode()) {
-    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
-    return;
-  }
+  // Guest ดูได้ถ้า freeMode ON — backend /api/access จะ allow (freeMode override)
+  // ถ้าไม่ใช่ freeMode → ยังต้อง login (เช็คตอน access gate หลังเลือก ep)
   document.body.insertAdjacentHTML('afterbegin', renderHeader(''));
   renderAnnouncementBanner();
   startHeartbeat();
