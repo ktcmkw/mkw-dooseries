@@ -144,6 +144,7 @@ const SOURCE_ADAPTERS = {
       return {
         videoUrl: v.videoUrl || q1080 || q720 || q540 || '',
         '1080p': q1080,
+        '720p': q720,
         '540p': q540,
         locked: !!v.locked,
       };
@@ -194,6 +195,7 @@ async function ensureEpisodeUrl(ep, bookId, source) {
   const r = await a.fetchVideoUrl(bookId, ep.chapterIndex);
   ep.videoUrl = r.videoUrl;
   ep['1080p'] = r['1080p'];
+  ep['720p'] = r['720p'] || '';
   ep['540p'] = r['540p'];
   return ep;
 }
@@ -1409,12 +1411,13 @@ async function playEpisode(ep, ctx) {
       return;
     }
   }
-  // ลอง URL ตามลำดับ — ไม่แสดง URL/quality ให้ user เห็น (ป้องกัน copy/download)
-  const urls = [ep['1080p'], ep.videoUrl, ep['540p']].filter(Boolean);
-  if (!urls.length) {
+
+  const qualities = getQualityOptions(ep);
+  if (!qualities.length) {
     showPlayerError('ไม่พบ URL วิดีโอ', '');
     return;
   }
+  let currentQuality = pickPreferredQuality(qualities);
 
   const wrap = $('#videoWrap');
   let video = wrap.querySelector('#player');
@@ -1429,40 +1432,97 @@ async function playEpisode(ep, ctx) {
   const ctrl = new AbortController();
   video._ctrl = ctrl;
   let attemptIdx = 0;
+  const fallbackOrder = [currentQuality, ...qualities.filter(q => q !== currentQuality)];
 
   function tryPlay() {
-    if (attemptIdx >= urls.length) {
+    if (attemptIdx >= fallbackOrder.length) {
       $('#msg').innerHTML = `<div class="error-banner rounded-lg p-3 text-sm">เล่นไม่ได้ — ลองทุก URL แล้ว</div>`;
       return;
     }
-    video.src = urls[attemptIdx];
+    currentQuality = fallbackOrder[attemptIdx];
+    video.src = currentQuality.url;
     video.play().catch(() => {/* autoplay อาจโดน block */});
   }
   video.addEventListener('error', () => {
     attemptIdx++;
-    if (attemptIdx < urls.length) tryPlay();
+    if (attemptIdx < fallbackOrder.length) tryPlay();
   }, { signal: ctrl.signal });
   tryPlay();
 
-  // Auto-next + next ep button
-  setupAutoNext(ep, video, ctx, ctrl);
-}
-
-function swipeToast(text) {
-  let t = document.getElementById('swipeToast');
-  if (!t) {
-    t = document.createElement('div');
-    t.id = 'swipeToast';
-    t.className = 'fixed left-1/2 top-1/3 -translate-x-1/2 px-5 py-3 bg-black/80 text-white text-lg font-bold rounded-xl pointer-events-none z-[9999] transition-opacity';
-    document.body.appendChild(t);
+  function changeQuality(label) {
+    const q = qualities.find(x => x.label === label);
+    if (!q || q.url === video.src) return;
+    const t = video.currentTime;
+    const wasPlaying = !video.paused;
+    video.src = q.url;
+    video.currentTime = t;
+    if (wasPlaying) video.play().catch(() => {});
+    currentQuality = q;
+    localStorage.setItem('mkw_quality', label);
   }
-  t.textContent = text;
-  t.style.opacity = '1';
-  clearTimeout(t._fade);
-  t._fade = setTimeout(() => { t.style.opacity = '0'; }, 700);
+
+  // Auto-next + next ep button + quality selector + swipe
+  setupAutoNext(ep, video, ctx, ctrl, { qualities, getCurrentQuality: () => currentQuality, changeQuality });
 }
 
-function setupAutoNext(ep, video, ctx, ctrl) {
+function getQualityOptions(ep) {
+  const opts = [];
+  if (ep['1080p']) opts.push({ label: '1080p', url: ep['1080p'] });
+  if (ep['720p']) opts.push({ label: '720p', url: ep['720p'] });
+  if (ep['540p']) opts.push({ label: '540p', url: ep['540p'] });
+  if (!opts.length && ep.videoUrl) opts.push({ label: 'Auto', url: ep.videoUrl });
+  // เพิ่ม Auto เป็น fallback ถ้า videoUrl ต่างจาก quality specific
+  if (ep.videoUrl && !opts.some(o => o.url === ep.videoUrl)) {
+    opts.push({ label: 'Auto', url: ep.videoUrl });
+  }
+  return opts;
+}
+
+function pickPreferredQuality(opts) {
+  const pref = localStorage.getItem('mkw_quality') || '1080p';
+  return opts.find(o => o.label === pref) || opts[0];
+}
+
+function showEpChangeConfirm(currentIdx, targetIdx, onConfirm) {
+  const existing = document.getElementById('epConfirmPopup');
+  if (existing) existing.remove();
+
+  const isNext = targetIdx > currentIdx;
+  const dirLabel = isNext ? '▲ ตอนถัดไป' : '▼ ตอนก่อนหน้า';
+  const dirColor = isNext ? 'text-red-400' : 'text-amber-400';
+
+  const popup = document.createElement('div');
+  popup.id = 'epConfirmPopup';
+  // ลอยกลางจอ ไม่มี backdrop เต็มจอ → video controls ข้างใต้ยังกดได้ video ไม่ pause
+  popup.className = 'fixed left-1/2 top-1/3 -translate-x-1/2 z-[9998] w-[280px] max-w-[90vw] transition-opacity';
+  popup.innerHTML = `
+    <div class="bg-black/90 backdrop-blur-sm border border-white/20 rounded-2xl p-5 text-center shadow-2xl">
+      <div class="text-xs font-bold ${dirColor} mb-1">${dirLabel}</div>
+      <div class="text-xl font-black text-white mb-1">EP ${currentIdx} → EP ${targetIdx}</div>
+      <div class="text-xs text-zinc-400 mb-4">ต้องการเปลี่ยนตอนหรือไม่?</div>
+      <div class="flex gap-2">
+        <button id="epCancel" class="flex-1 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm font-semibold">ยกเลิก</button>
+        <button id="epConfirm" class="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-semibold">ตกลง</button>
+      </div>
+      <div class="text-[10px] text-zinc-600 mt-2">ปิดอัตโนมัติใน 5 วิ</div>
+    </div>
+  `;
+  document.body.appendChild(popup);
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer);
+    popup.style.opacity = '0';
+    setTimeout(() => popup.remove(), 200);
+  };
+  popup.querySelector('#epCancel').onclick = close;
+  popup.querySelector('#epConfirm').onclick = () => { close(); onConfirm(); };
+  const timer = setTimeout(close, 5000);
+}
+
+function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
   if (!ctx) return;
   const { bookId, source, total, episodes } = ctx;
   const nextEp = episodes.find(e => e.chapterIndex === ep.chapterIndex + 1);
@@ -1498,6 +1558,14 @@ function setupAutoNext(ep, video, ctx, ctrl) {
         <input id="autoNextCb" type="checkbox" ${autoNext ? 'checked' : ''} class="w-4 h-4 accent-red-500"/>
         <span>เล่นตอนถัดไปอัตโนมัติ</span>
       </label>
+      ${playerOpts?.qualities?.length > 1 ? `
+        <div class="flex items-center gap-1.5 text-xs">
+          <span class="text-zinc-500">คุณภาพ:</span>
+          <select id="qualitySel" class="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-white text-xs font-semibold cursor-pointer hover:border-red-500">
+            ${playerOpts.qualities.map(q => `<option value="${q.label}" ${q.label === playerOpts.getCurrentQuality().label ? 'selected' : ''}>${q.label}</option>`).join('')}
+          </select>
+        </div>
+      ` : ''}
       <div class="flex items-center gap-2">
         ${prevEp ? `<button id="prevEpBtn" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded text-sm">◀ EP ${prevEp.chapterIndex}</button>` : ''}
         ${nextEp ? `<button id="nextEpBtn" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-semibold">EP ${nextEp.chapterIndex} ▶</button>` : '<span class="text-zinc-500 text-sm">ตอนสุดท้ายแล้ว</span>'}
@@ -1510,10 +1578,14 @@ function setupAutoNext(ep, video, ctx, ctrl) {
     autoNext = e.target.checked;
     localStorage.setItem('mkw_autonext', autoNext ? '1' : '0');
   };
+  const qSel = $('#qualitySel');
+  if (qSel && playerOpts?.changeQuality) {
+    qSel.onchange = e => playerOpts.changeQuality(e.target.value);
+  }
   if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
   if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
 
-  // Swipe gesture (TikTok-style) — ขึ้น=ep ถัดไป / ลง=ep ก่อน
+  // Swipe gesture (TikTok-style) — ขึ้น=ep ถัดไป / ลง=ep ก่อน → แสดง popup ยืนยัน (video เล่นต่อปกติ)
   const wrap = $('#videoWrap');
   if (wrap && (nextEp || prevEp)) {
     let sy = 0, sx = 0, st = 0;
@@ -1531,11 +1603,9 @@ function setupAutoNext(ep, video, ctx, ctrl) {
       st = 0;
       if (dt > 600 || Math.abs(dy) < 60 || Math.abs(dy) < Math.abs(dx) * 1.5) return;
       if (dy < 0 && nextEp) {
-        swipeToast(`▲ EP ${nextEp.chapterIndex}`);
-        goToEpisode(nextEp.chapterIndex, ctx);
+        showEpChangeConfirm(ep.chapterIndex, nextEp.chapterIndex, () => goToEpisode(nextEp.chapterIndex, ctx));
       } else if (dy > 0 && prevEp) {
-        swipeToast(`▼ EP ${prevEp.chapterIndex}`);
-        goToEpisode(prevEp.chapterIndex, ctx);
+        showEpChangeConfirm(ep.chapterIndex, prevEp.chapterIndex, () => goToEpisode(prevEp.chapterIndex, ctx));
       }
     }, { passive: true, signal: ctrl?.signal });
   }
