@@ -68,26 +68,35 @@ const auth = {
   headers() { return this.token ? { Authorization: 'Bearer ' + this.token } : {}; },
 };
 
-// ---------- Online Points ticker (นับเฉพาะตอนวิดีโอเล่น — pause/offline จะหยุด) ----------
+// ---------- Online Points ticker (นับเฉพาะตอนวิดีโอเล่นจริงๆ — currentTime ต้องขยับ) ----------
 // ทุก 60 วิของการเล่นจะส่งไป backend → +10 พ้อย (cap วันละ 10000)
 const pointsTicker = {
   intervalId: null,
   accumSec: 0,
   video: null,
-  onUpdate: null,
+  lastTime: 0,
   attach(video) {
     this.detach();
     if (!auth.user) return;
     this.video = video;
+    this.lastTime = video.currentTime || 0;
     this.intervalId = setInterval(() => this._onSecond(), 1000);
   },
   detach() {
     if (this.intervalId) { clearInterval(this.intervalId); this.intervalId = null; }
     this.video = null;
     this.accumSec = 0;
+    this.lastTime = 0;
   },
   _onSecond() {
-    if (!this.video || this.video.paused || this.video.ended || document.hidden) return;
+    const v = this.video;
+    if (!v || v.paused || v.ended || v.seeking || document.hidden) return;
+    // ✅ เช็คว่า currentTime ขยับจริงในอัตราการเล่นปกติ
+    // กัน buffer / network stall (paused=false แต่วิดีโอนิ่ง) + กัน seek (jump > 1.5s)
+    const t = v.currentTime;
+    const dt = t - this.lastTime;
+    this.lastTime = t;
+    if (dt < 0.5 || dt > 1.5) return;
     this.accumSec++;
     if (this.accumSec >= 60) this._flush();
   },
@@ -99,7 +108,6 @@ const pointsTicker = {
       const r = await backendPost('/api/user/points/tick', { seconds });
       auth.user.points = r.points;
       auth.user.pointsToday = r.pointsToday;
-      if (this.onUpdate) this.onUpdate(auth.user);
       updatePointsUi();
     } catch { /* เงียบ — accumSec reset แล้ว */ }
   },
@@ -108,18 +116,46 @@ const pointsTicker = {
 function updatePointsUi() {
   const u = auth.user;
   if (!u) return;
+  const pts = u.points || 0;
+  const today = u.pointsToday || 0;
+  const cap = u.pointsDailyCap || 10000;
   const hp = document.getElementById('headerPoints');
-  if (hp) hp.textContent = (u.points || 0).toLocaleString();
+  if (hp) hp.textContent = pts.toLocaleString();
   const pt = document.getElementById('popupPointsToday');
   const pb = document.getElementById('popupPointsTotal');
-  if (pt) pt.textContent = `${(u.pointsToday || 0).toLocaleString()}/${(u.pointsDailyCap || 10000).toLocaleString()}`;
-  if (pb) pb.textContent = (u.points || 0).toLocaleString();
+  if (pt) pt.textContent = `${today.toLocaleString()}/${cap.toLocaleString()}`;
+  if (pb) pb.textContent = pts.toLocaleString();
+  // Mini circle (TikTok-style)
+  const mini = document.getElementById('pointsMini');
+  if (mini) {
+    const pct = Math.min(100, Math.round(today / cap * 100));
+    mini.style.background = `conic-gradient(#fbbf24 ${pct}%, #3f3f46 ${pct}%)`;
+    const lbl = mini.querySelector('.miniNum');
+    if (lbl) lbl.textContent = pts >= 1000 ? Math.floor(pts / 1000) + 'k' : pts;
+  }
+}
+
+// State machine: 'popup' | 'mini' | 'hidden'
+function _pointsRemoveAll() {
+  document.getElementById('pointsPopup')?.remove();
+  document.getElementById('pointsMini')?.remove();
+}
+function _pointsKeepInFs(el) {
+  const moveOnFs = () => {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    const target = fsEl || document.body;
+    if (el.parentElement !== target) target.appendChild(el);
+  };
+  document.addEventListener('fullscreenchange', moveOnFs);
+  document.addEventListener('webkitfullscreenchange', moveOnFs);
+  el._moveOnFs = moveOnFs;
 }
 
 function showPointsPopup() {
   if (!auth.user) return;
   if (localStorage.getItem('mkw_points_popup_hidden') === '1') return;
   if (document.getElementById('pointsPopup')) return;
+  _pointsRemoveAll();
   const u = auth.user;
   const popup = document.createElement('div');
   popup.id = 'pointsPopup';
@@ -127,7 +163,10 @@ function showPointsPopup() {
   popup.innerHTML = `
     <div class="flex items-center justify-between mb-2">
       <span class="font-bold text-amber-300 text-sm">⭐ พ้อยออนไลน์</span>
-      <button id="closePointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ปิด">✕</button>
+      <div class="flex items-center gap-1">
+        <button id="minPointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ย่อ" title="ย่อเป็นวงกลม">−</button>
+        <button id="closePointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ปิด" title="ซ่อน">✕</button>
+      </div>
     </div>
     <div class="space-y-1">
       <div class="flex items-center justify-between"><span class="text-zinc-400">วันนี้:</span><span id="popupPointsToday" class="font-bold text-amber-300">${(u.pointsToday || 0).toLocaleString()}/${(u.pointsDailyCap || 10000).toLocaleString()}</span></div>
@@ -137,19 +176,53 @@ function showPointsPopup() {
     </div>
   `;
   document.body.appendChild(popup);
-  const moveOnFs = () => {
-    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
-    const target = fsEl || document.body;
-    if (popup.parentElement !== target) target.appendChild(popup);
-  };
-  document.addEventListener('fullscreenchange', moveOnFs);
-  document.addEventListener('webkitfullscreenchange', moveOnFs);
+  _pointsKeepInFs(popup);
+  popup.querySelector('#minPointsPopup').onclick = () => showPointsMini();
   popup.querySelector('#closePointsPopup').onclick = () => {
-    popup.remove();
-    document.removeEventListener('fullscreenchange', moveOnFs);
-    document.removeEventListener('webkitfullscreenchange', moveOnFs);
+    _pointsRemoveAll();
     localStorage.setItem('mkw_points_popup_hidden', '1');
   };
+}
+
+function showPointsMini() {
+  if (!auth.user) return;
+  _pointsRemoveAll();
+  const u = auth.user;
+  const today = u.pointsToday || 0;
+  const cap = u.pointsDailyCap || 10000;
+  const pct = Math.min(100, Math.round(today / cap * 100));
+  const num = (u.points || 0) >= 1000 ? Math.floor((u.points || 0) / 1000) + 'k' : (u.points || 0);
+
+  const mini = document.createElement('div');
+  mini.id = 'pointsMini';
+  mini.className = 'fixed right-3 bottom-20 z-[9999] w-14 h-14 rounded-full shadow-2xl cursor-pointer';
+  mini.style.background = `conic-gradient(#fbbf24 ${pct}%, #3f3f46 ${pct}%)`;
+  mini.title = 'แตะเพื่อขยายพ้อยออนไลน์';
+  mini.innerHTML = `
+    <div class="absolute inset-1 rounded-full bg-black/90 flex flex-col items-center justify-center select-none">
+      <span class="text-amber-300 text-[10px] leading-none">⭐</span>
+      <span class="miniNum text-amber-400 text-xs font-black leading-none mt-0.5">${num}</span>
+    </div>
+    <button id="closePointsMini" class="absolute -top-1 -right-1 w-5 h-5 bg-zinc-800 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-[10px] leading-none shadow" aria-label="ซ่อน">✕</button>
+  `;
+  document.body.appendChild(mini);
+  _pointsKeepInFs(mini);
+  // คลิกที่วงกลม (ไม่ใช่ปุ่ม X) → ขยายกลับ
+  mini.addEventListener('click', e => {
+    if (e.target.closest('#closePointsMini')) return;
+    showPointsPopup();
+  });
+  mini.querySelector('#closePointsMini').onclick = e => {
+    e.stopPropagation();
+    _pointsRemoveAll();
+    localStorage.setItem('mkw_points_popup_hidden', '1');
+  };
+}
+
+// เปิด popup จากปุ่มใน player controls — เคลียร์ flag hidden เสมอ
+function reopenPointsPopup() {
+  localStorage.removeItem('mkw_points_popup_hidden');
+  showPointsPopup();
 }
 
 // ---------- API clients ----------
@@ -414,14 +487,24 @@ async function apiGetList(pathOrSpec) {
   return { items: merged, total, _multi: true, _buckets: buckets.map(b => ({ source: b.source, count: b.items.length, total: b.total || 0, err: b.err?.message || null, skipped: !!b.skipped })) };
 }
 
-async function backendGet(path) {
-  const res = await fetch(path, { headers: auth.headers() });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
-    const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
+async function backendGet(path, opts = {}) {
+  const { timeoutMs } = opts;
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(path, { headers: auth.headers(), signal: ctrl?.signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
+      const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
+    }
+    return data;
+  } catch (e) {
+    if (e.name === 'AbortError') { const te = new Error('หมดเวลาเชื่อมต่อ (timeout)'); te.status = 0; throw te; }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return data;
 }
 
 async function backendPost(path, body) {
@@ -1738,10 +1821,10 @@ async function initPlayPage() {
     goToEpisode(newIdx, { bookId, source, total, episodes, detail });
   });
 
-  // 2) Access check (server-side)
+  // 2) Access check (server-side) — timeout 10s
   let access;
   try {
-    access = await backendGet(`/api/access?bookId=${encodeURIComponent(bookId)}&index=${index}`);
+    access = await backendGet(`/api/access?bookId=${encodeURIComponent(bookId)}&index=${index}`, { timeoutMs: 10000 });
   } catch (e) {
     showPlayerError('ตรวจสิทธิ์ไม่ได้', e.message);
     return;
@@ -1829,6 +1912,8 @@ function epChangeWithCooldown(targetIdx, ctx, sourceBtn) {
 // In-place ตอนถัดไป — ไม่โหลดหน้าใหม่ (TikTok-style smooth transition)
 async function goToEpisode(newIndex, ctx) {
   const { bookId, source, total, episodes, detail } = ctx;
+  // หยุดนับพ้อยทันที — รอ playEpisode ของ ep ใหม่ค่อย attach กลับ
+  pointsTicker.detach();
   const src = source || 'dramabox';
   const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
   const ep = episodes.find(e => e.chapterIndex === newIndex);
@@ -1870,7 +1955,7 @@ async function goToEpisode(newIndex, ctx) {
   // Access check ตอนใหม่
   let access;
   try {
-    access = await backendGet(`/api/access?bookId=${encodeURIComponent(bookId)}&index=${newIndex}`);
+    access = await backendGet(`/api/access?bookId=${encodeURIComponent(bookId)}&index=${newIndex}`, { timeoutMs: 10000 });
   } catch (e) {
     showPlayerError('ตรวจสิทธิ์ไม่ได้', e.message);
     return;
@@ -1890,6 +1975,7 @@ async function goToEpisode(newIndex, ctx) {
 }
 
 function showPlayerError(title, detail) {
+  pointsTicker.detach();
   $('#videoWrap').innerHTML = `
     <div class="w-full h-full flex items-center justify-center text-center p-6">
       <div>
@@ -2159,6 +2245,7 @@ function buildCustomControls(video, wrap) {
         </div>
         <div class="flex items-center gap-2">
           <button id="muteBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="mute">🔊</button>
+          <button id="pointsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="พ้อยออนไลน์" title="พ้อยออนไลน์">⭐</button>
           <button id="fsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="fullscreen">⛶</button>
         </div>
       </div>
@@ -2175,7 +2262,7 @@ function bindCustomControls(video, wrap, ctrl, playerOpts) {
 
   const q = sel => overlay.querySelector(sel);
   const seekBar = q('#seekBar'), curTime = q('#curTime'), totTime = q('#totTime');
-  const playPauseBtn = q('#playPauseBtn'), fsBtn = q('#fsBtn'), muteBtn = q('#muteBtn');
+  const playPauseBtn = q('#playPauseBtn'), fsBtn = q('#fsBtn'), muteBtn = q('#muteBtn'), pointsBtn = q('#pointsBtn');
   const zoneL = q('#zoneL'), zoneC = q('#zoneC'), zoneR = q('#zoneR');
   const qualityBtn = q('#qualityBtn'), qualityLabel = q('#qualityLabel'), qMenu = q('#qMenu');
 
@@ -2306,6 +2393,16 @@ function bindCustomControls(video, wrap, ctrl, playerOpts) {
   }, opts);
   video.addEventListener('volumechange', updateMuteUI, opts);
   updateMuteUI();
+
+  // ---- OnlinePoint button → เปิด popup กลับมา (ล้าง flag hidden) ----
+  if (pointsBtn) {
+    if (!auth.user) pointsBtn.style.display = 'none';
+    else pointsBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      reopenPointsPopup();
+      showCtrls();
+    }, opts);
+  }
 
   // ---- Fullscreen (on WRAP — swipe + popup ใช้ได้ใน fullscreen) ----
   fsBtn.addEventListener('click', async e => {
