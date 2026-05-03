@@ -29,6 +29,7 @@ async function initAdminPage() {
       <button data-tab="slips"     class="tab-btn px-4 py-2 text-sm rounded-t-lg">🧾 สลิปรอตรวจ</button>
       <button data-tab="history"   class="tab-btn px-4 py-2 text-sm rounded-t-lg">📊 ประวัติเติมเงิน</button>
       <button data-tab="messages"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📬 ส่งข้อความ</button>
+      <button data-tab="usermsg"   class="tab-btn px-4 py-2 text-sm rounded-t-lg">📥 ข้อความจาก user</button>
       <button data-tab="site"      class="tab-btn px-4 py-2 text-sm rounded-t-lg">🌐 ระบบ</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
     </div>
@@ -62,6 +63,7 @@ async function loadTab(tab) {
     if (tab === 'slips')     return renderSlipsTab(c);
     if (tab === 'history')   return renderHistoryTab(c);
     if (tab === 'messages')  return renderMessagesTab(c);
+    if (tab === 'usermsg')   return renderUserMessagesTab(c);
     if (tab === 'site')      return renderSiteTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
   } catch (e) {
@@ -127,6 +129,8 @@ async function renderUsersTab(c) {
                     <button class="act-vip text-xs px-3 py-1.5 hover:bg-amber-500/20 text-amber-300 rounded text-left">ตั้ง VIP หมดอายุ</button>
                     <button class="act-pw text-xs px-3 py-1.5 hover:bg-purple-500/20 text-purple-300 rounded text-left">รีเซ็ตรหัสผ่าน</button>
                     <button class="act-history text-xs px-3 py-1.5 hover:bg-zinc-800 text-zinc-200 rounded text-left">ดูประวัติการดู</button>
+                    <button class="act-purchase text-xs px-3 py-1.5 hover:bg-amber-500/20 text-amber-200 rounded text-left">ดูเติมเงิน</button>
+                    <button class="act-inbox text-xs px-3 py-1.5 hover:bg-blue-500/20 text-blue-200 rounded text-left">ดูจดหมาย</button>
                     <button class="act-logout text-xs px-3 py-1.5 hover:bg-orange-500/20 text-orange-300 rounded text-left">Force Logout</button>
                     ${u.username !== 'admin' ? `<button class="act-del text-xs px-3 py-1.5 hover:bg-red-500/20 text-red-300 rounded text-left">ลบ user</button>` : ''}
                   </div>
@@ -231,6 +235,100 @@ async function renderUsersTab(c) {
       $('#histOverlay').onclick = ev => { if (ev.target.id === 'histOverlay') $('#userModal').innerHTML = ''; };
     } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   });
+  $$('.act-purchase').forEach(b => b.onclick = async () => {
+    const username = tr(b).dataset.u;
+    try {
+      const d = await backendGet(`/api/admin/user/${encodeURIComponent(username)}/purchase-history`);
+      const fmt = iso => {
+        const dt = new Date(iso);
+        return isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      };
+      const topups = (d.topups || []).slice().reverse();
+      const vip = (d.vip || []).slice().reverse();
+      const slips = (d.slips || []).slice().reverse();
+      const totalCoin = topups.reduce((s, t) => s + (t.coins || 0), 0);
+      const totalSpent = topups.reduce((s, t) => s + (t.pricePaid || 0), 0);
+      const totalVipDays = vip.reduce((s, v) => s + (v.days || 0), 0);
+      const statusBadge = s => {
+        const map = { pending: 'bg-amber-500/20 text-amber-300', approved: 'bg-emerald-500/20 text-emerald-300', rejected: 'bg-red-500/20 text-red-300' };
+        const lbl = { pending: 'รออนุมัติ', approved: 'อนุมัติ', rejected: 'ปฏิเสธ' }[s] || s;
+        return `<span class="text-[10px] font-bold px-2 py-0.5 rounded ${map[s] || 'bg-zinc-700 text-zinc-300'}">${lbl}</span>`;
+      };
+      let body = `
+        <div class="grid grid-cols-3 gap-2 mb-4">
+          <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">เติมสะสม</div><div class="text-lg font-black text-amber-400">${totalCoin.toLocaleString()} NSV</div></div>
+          <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">จ่ายจริง</div><div class="text-lg font-black text-zinc-200">฿${totalSpent.toLocaleString()}</div></div>
+          <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">VIP รวม</div><div class="text-lg font-black text-purple-300">${totalVipDays} วัน</div></div>
+        </div>`;
+      if (slips.length) {
+        body += `<div class="mb-3"><div class="text-xs font-bold text-zinc-400 mb-1.5">📋 สลิป (${slips.length})</div>` +
+          slips.map(s => `<div class="bg-zinc-950/50 border border-zinc-800 rounded px-3 py-2 text-xs mb-1 flex items-center gap-2 flex-wrap">${statusBadge(s.status)}<span class="font-bold text-amber-400">+${(s.amount || 0).toLocaleString()}</span><span class="text-zinc-500">${fmt(s.uploadedAt)}</span>${s.note ? `<span class="text-zinc-400 w-full">${escapeHtml(s.note)}</span>` : ''}${s.status === 'rejected' && s.rejectReason ? `<span class="text-red-400 w-full">เหตุผล: ${escapeHtml(s.rejectReason)}</span>` : ''}</div>`).join('') +
+          `</div>`;
+      }
+      if (topups.length) {
+        body += `<div class="mb-3"><div class="text-xs font-bold text-zinc-400 mb-1.5">💰 ประวัติเหรียญ (${topups.length})</div>` +
+          topups.slice(0, 50).map(t => `<div class="flex items-center justify-between text-xs px-3 py-1.5 bg-zinc-950/50 border border-zinc-800/50 rounded mb-1"><span class="text-zinc-500">${fmt(t.at)}</span><span class="text-zinc-400 flex-1 mx-2 truncate">${escapeHtml(String(t.packageId || ''))}</span><span class="font-bold text-amber-400">+${(t.coins || 0).toLocaleString()}</span></div>`).join('') +
+          `</div>`;
+      }
+      if (vip.length) {
+        body += `<div><div class="text-xs font-bold text-zinc-400 mb-1.5">👑 VIP (${vip.length})</div>` +
+          vip.map(v => `<div class="flex items-center justify-between text-xs px-3 py-1.5 bg-purple-950/20 border border-purple-900/50 rounded mb-1"><span class="text-zinc-500">${fmt(v.at)}</span><span class="text-purple-200 flex-1 mx-2 truncate">${escapeHtml(v.packageLabel || v.packageId || v.source || '')} (${v.days} วัน)</span><span class="font-bold text-purple-300">${v.coinsPaid ? '-' + v.coinsPaid.toLocaleString() : v.source === 'giftcard' ? 'gift' : ''}</span></div>`).join('') +
+          `</div>`;
+      }
+      if (!slips.length && !topups.length && !vip.length) body = `<div class="text-center py-8 text-zinc-500 text-sm">ยังไม่มีประวัติเติมเงิน</div>`;
+      $('#userModal').innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.8);backdrop-filter:blur(4px)" id="puOverlay">
+          <div class="bg-zinc-900 border border-zinc-700 rounded-xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+            <div class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+              <h3 class="font-bold">💳 ประวัติเติมเงินของ <span class="font-mono text-amber-400">${escapeHtml(username)}</span></h3>
+              <button id="puClose" class="text-zinc-400 hover:text-white text-xl leading-none">✕</button>
+            </div>
+            <div class="overflow-auto p-4">${body}</div>
+          </div>
+        </div>`;
+      $('#puClose').onclick = () => $('#userModal').innerHTML = '';
+      $('#puOverlay').onclick = ev => { if (ev.target.id === 'puOverlay') $('#userModal').innerHTML = ''; };
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+
+  $$('.act-inbox').forEach(b => b.onclick = async () => {
+    const username = tr(b).dataset.u;
+    try {
+      const { inbox } = await backendGet(`/api/admin/user/${encodeURIComponent(username)}/inbox`);
+      const fmt = iso => {
+        const dt = new Date(iso);
+        return isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      };
+      const list = (inbox || []).slice().reverse();
+      const body = list.length ? list.map(m => {
+        const deleted = !!m.deletedAt;
+        return `<div class="border ${deleted ? 'border-red-900/50 bg-red-950/10' : (m.read ? 'border-zinc-800 bg-zinc-950/50' : 'border-amber-500/30 bg-amber-500/5')} rounded p-3 mb-2 text-xs">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            ${deleted ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-300">ลบโดย user</span>' : (m.read ? '<span class="text-[10px] text-zinc-500">อ่านแล้ว</span>' : '<span class="text-[10px] font-bold text-amber-300">● ยังไม่อ่าน</span>')}
+            <span class="text-zinc-500">${fmt(m.at)}</span>
+            <span class="text-zinc-600 ml-auto font-mono text-[10px]">${escapeHtml(m.id || '')}</span>
+          </div>
+          ${m.subject ? `<div class="font-bold text-zinc-200 mb-1">${escapeHtml(m.subject)}</div>` : ''}
+          <div class="text-zinc-300 whitespace-pre-wrap">${escapeHtml(m.body || '')}</div>
+          ${m.from ? `<div class="text-[10px] text-zinc-500 mt-1">จาก: ${escapeHtml(m.from)}</div>` : ''}
+          ${deleted ? `<div class="text-[10px] text-red-400 mt-1">ลบเมื่อ: ${fmt(m.deletedAt)}</div>` : ''}
+        </div>`;
+      }).join('') : `<div class="text-center py-8 text-zinc-500 text-sm">ยังไม่มีจดหมาย</div>`;
+      $('#userModal').innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.8);backdrop-filter:blur(4px)" id="ibOverlay">
+          <div class="bg-zinc-900 border border-zinc-700 rounded-xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+            <div class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+              <h3 class="font-bold">📬 จดหมายของ <span class="font-mono text-amber-400">${escapeHtml(username)}</span> <span class="text-xs text-zinc-500 font-normal">(${list.length} ฉบับ — รวมที่ user ลบแล้ว)</span></h3>
+              <button id="ibClose" class="text-zinc-400 hover:text-white text-xl leading-none">✕</button>
+            </div>
+            <div class="overflow-auto p-4">${body}</div>
+          </div>
+        </div>`;
+      $('#ibClose').onclick = () => $('#userModal').innerHTML = '';
+      $('#ibOverlay').onclick = ev => { if (ev.target.id === 'ibOverlay') $('#userModal').innerHTML = ''; };
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+
   $$('.act-del').forEach(b => b.onclick = async () => {
     const username = tr(b).dataset.u;
     if (!confirm(`ลบ user "${username}" แน่นะ?`)) return;
@@ -453,36 +551,94 @@ async function renderGiftcardsTab(c) {
   c.innerHTML = `
     <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-5">
       <h3 class="font-bold mb-3">สร้าง Gift Card</h3>
-      <form id="gForm" class="grid sm:grid-cols-4 gap-3">
-        <input id="gCode" type="text" required placeholder="CODE (เช่น NSV2026)" class="sm:col-span-2 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm uppercase font-mono"/>
-        <input id="gCoins" type="number" required min="1" placeholder="จำนวน coin" class="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
-        <button class="px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold">สร้าง</button>
+      <form id="gForm" class="space-y-3">
+        <div class="flex gap-3 flex-wrap">
+          <label class="flex items-center gap-2 cursor-pointer text-sm">
+            <input type="radio" name="gType" value="coin" checked class="accent-amber-500"/>
+            <span class="text-amber-300 font-bold">💰 เหรียญ NSV</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer text-sm">
+            <input type="radio" name="gType" value="vip" class="accent-purple-500"/>
+            <span class="text-purple-300 font-bold">👑 VIP (กำหนดวัน)</span>
+          </label>
+        </div>
+        <div class="grid sm:grid-cols-3 gap-3">
+          <input id="gCode" type="text" required placeholder="CODE (เช่น NSV2026)" class="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm uppercase font-mono"/>
+          <input id="gCoins" type="number" min="1" placeholder="จำนวน coin" class="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <button class="px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-semibold">สร้าง</button>
+        </div>
+        <div id="gVipBox" class="hidden bg-purple-950/20 border border-purple-900/40 rounded p-3">
+          <div class="text-xs text-purple-300 mb-2 font-bold">เลือกจำนวนวัน VIP</div>
+          <div class="flex gap-2 flex-wrap mb-2">
+            <button type="button" data-d="1"  class="vip-preset px-3 py-1.5 bg-zinc-800 hover:bg-purple-600 text-xs rounded">1 วัน</button>
+            <button type="button" data-d="7"  class="vip-preset px-3 py-1.5 bg-zinc-800 hover:bg-purple-600 text-xs rounded">7 วัน</button>
+            <button type="button" data-d="15" class="vip-preset px-3 py-1.5 bg-zinc-800 hover:bg-purple-600 text-xs rounded">15 วัน</button>
+            <button type="button" data-d="30" class="vip-preset px-3 py-1.5 bg-zinc-800 hover:bg-purple-600 text-xs rounded">30 วัน</button>
+          </div>
+          <input id="gVipDays" type="number" min="1" max="3650" placeholder="หรือพิมพ์เอง (วัน)" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          <p class="text-[10px] text-zinc-500 mt-1">นับเวลาตั้งแต่ user แลก code (ถ้ายัง VIP อยู่ จะต่ออายุจากวันหมดอายุเดิม)</p>
+        </div>
       </form>
     </div>
     <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-zinc-800/50 text-zinc-400 text-xs">
-          <tr><th class="px-4 py-3 text-left">Code</th><th class="px-4 py-3 text-right">Coins</th><th class="px-4 py-3 text-left">สถานะ</th><th class="px-4 py-3 text-left">ใช้โดย</th><th class="px-4 py-3 text-right"></th></tr>
+          <tr><th class="px-4 py-3 text-left">Code</th><th class="px-4 py-3 text-left">ประเภท</th><th class="px-4 py-3 text-right">มูลค่า</th><th class="px-4 py-3 text-left">สถานะ</th><th class="px-4 py-3 text-left">ใช้โดย</th><th class="px-4 py-3 text-right"></th></tr>
         </thead>
         <tbody>
-          ${entries.length ? entries.map(([code, g]) => `
+          ${entries.length ? entries.map(([code, g]) => {
+            const isVip = g.type === 'vip';
+            return `
             <tr class="border-t border-zinc-800">
               <td class="px-4 py-3 font-mono">${escapeHtml(code)}</td>
-              <td class="px-4 py-3 text-right font-bold text-amber-400">${(g.coins || 0).toLocaleString()}</td>
+              <td class="px-4 py-3 text-xs">${isVip ? '<span class="px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded">👑 VIP</span>' : '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded">💰 Coin</span>'}</td>
+              <td class="px-4 py-3 text-right font-bold ${isVip ? 'text-purple-300' : 'text-amber-400'}">${isVip ? `${g.vipDays || 0} วัน` : `${(g.coins || 0).toLocaleString()}`}</td>
               <td class="px-4 py-3">${g.used ? '<span class="text-zinc-500 text-xs">✓ ใช้แล้ว</span>' : '<span class="text-emerald-400 text-xs">● พร้อมใช้</span>'}</td>
               <td class="px-4 py-3 text-xs text-zinc-500">${escapeHtml(g.usedBy || '-')}</td>
               <td class="px-4 py-3 text-right"><button class="rm-gc text-xs px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded" data-code="${escapeHtml(code)}">ลบ</button></td>
-            </tr>
-          `).join('') : `<tr><td colspan="5" class="px-4 py-10 text-center text-zinc-500">ยังไม่มี gift card</td></tr>`}
+            </tr>`;
+          }).join('') : `<tr><td colspan="6" class="px-4 py-10 text-center text-zinc-500">ยังไม่มี gift card</td></tr>`}
         </tbody>
       </table>
     </div>
   `;
 
+  const typeRadios = $$('input[name="gType"]');
+  const coinInput = $('#gCoins');
+  const vipBox = $('#gVipBox');
+  const vipDaysInput = $('#gVipDays');
+  const updateForm = () => {
+    const t = document.querySelector('input[name="gType"]:checked').value;
+    if (t === 'vip') {
+      coinInput.classList.add('hidden');
+      coinInput.required = false;
+      vipBox.classList.remove('hidden');
+    } else {
+      coinInput.classList.remove('hidden');
+      coinInput.required = true;
+      vipBox.classList.add('hidden');
+    }
+  };
+  typeRadios.forEach(r => r.onchange = updateForm);
+  updateForm();
+  $$('.vip-preset').forEach(b => b.onclick = () => { vipDaysInput.value = b.dataset.d; });
+
   $('#gForm').onsubmit = async e => {
     e.preventDefault();
+    const type = document.querySelector('input[name="gType"]:checked').value;
+    const code = $('#gCode').value.trim().toUpperCase();
+    const payload = { code, type };
+    if (type === 'vip') {
+      const days = parseInt(vipDaysInput.value, 10);
+      if (!days || days < 1 || days > 3650) { alert('กรุณาใส่จำนวนวัน VIP (1-3650)'); return; }
+      payload.vipDays = days;
+    } else {
+      const coins = parseInt(coinInput.value, 10);
+      if (!coins || coins < 1) { alert('กรุณาใส่จำนวน coin'); return; }
+      payload.coins = coins;
+    }
     try {
-      await backendPost('/api/admin/giftcards', { code: $('#gCode').value.trim().toUpperCase(), coins: parseInt($('#gCoins').value, 10) });
+      await backendPost('/api/admin/giftcards', payload);
       renderGiftcardsTab(c);
     } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
   };
@@ -926,5 +1082,72 @@ async function renderMessagesTab(c) {
       status.textContent = ex.message;
       status.classList.add('text-red-400');
     }
+  };
+}
+
+// ---------- User → Admin messages (received) ----------
+async function renderUserMessagesTab(c) {
+  const { messages } = await backendGet('/api/admin/user-messages');
+  const list = (messages || []).slice().reverse();
+  const fmt = iso => {
+    const dt = new Date(iso);
+    return isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  const unreadCount = list.filter(m => !m.read).length;
+  c.innerHTML = `
+    <div class="flex items-center gap-3 mb-3 flex-wrap">
+      <h3 class="font-bold">📥 ข้อความที่ user ส่งหา admin</h3>
+      <span class="text-xs text-zinc-500">ทั้งหมด <strong>${list.length}</strong> • ยังไม่อ่าน <strong class="text-amber-300">${unreadCount}</strong></span>
+      ${list.length ? `<button id="umClearAll" class="ml-auto text-xs px-3 py-1.5 bg-zinc-800 hover:bg-red-600 hover:text-white text-zinc-300 rounded">ล้างทั้งหมด</button>` : ''}
+    </div>
+    <div class="space-y-2">
+      ${list.length ? list.map(m => `
+        <div class="bg-zinc-900 border ${m.read ? 'border-zinc-800' : 'border-amber-500/40'} rounded-lg p-4 text-sm" data-id="${escapeHtml(m.id)}">
+          <div class="flex items-center gap-2 flex-wrap mb-2">
+            ${m.read ? '<span class="text-[10px] text-zinc-500">อ่านแล้ว</span>' : '<span class="text-[10px] font-bold text-amber-300">● ใหม่</span>'}
+            <span class="font-mono font-bold text-zinc-200">@${escapeHtml(m.fromUsername || '?')}</span>
+            ${m.fromIp ? `<span class="text-[10px] text-zinc-500 font-mono">IP: ${escapeHtml(m.fromIp)}</span>` : ''}
+            <span class="text-xs text-zinc-500">${fmt(m.at)}</span>
+            <div class="ml-auto flex gap-1">
+              ${!m.read ? `<button class="um-read text-[10px] px-2 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded">✓ อ่านแล้ว</button>` : ''}
+              <button class="um-reply text-[10px] px-2 py-1 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded" data-user="${escapeHtml(m.fromUsername || '')}">↩ ตอบ</button>
+              <button class="um-del text-[10px] px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded">ลบ</button>
+            </div>
+          </div>
+          ${m.subject ? `<div class="font-bold text-zinc-100 mb-1">${escapeHtml(m.subject)}</div>` : ''}
+          <div class="text-zinc-300 whitespace-pre-wrap text-sm">${escapeHtml(m.body || '')}</div>
+        </div>
+      `).join('') : `<div class="bg-zinc-900 border border-zinc-800 rounded-lg p-8 text-center text-zinc-500 text-sm">ยังไม่มีข้อความ</div>`}
+    </div>
+  `;
+
+  $$('.um-read').forEach(b => b.onclick = async () => {
+    const id = b.closest('[data-id]').dataset.id;
+    try { await backendPost(`/api/admin/user-messages/${encodeURIComponent(id)}/read`, {}); renderUserMessagesTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('.um-del').forEach(b => b.onclick = async () => {
+    const id = b.closest('[data-id]').dataset.id;
+    if (!confirm('ลบข้อความนี้?')) return;
+    try { await backendDelete(`/api/admin/user-messages/${encodeURIComponent(id)}`); renderUserMessagesTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('.um-reply').forEach(b => b.onclick = () => {
+    const username = b.dataset.user;
+    if (!username) return;
+    $$('.tab-btn').forEach(x => x.classList.toggle('active', x.dataset.tab === 'messages'));
+    loadTab('messages').then(() => {
+      setTimeout(() => {
+        const sel = $('#msgTo');
+        if (sel) sel.value = username;
+        $('#msgSubject')?.focus();
+      }, 50);
+    });
+  });
+  const clearAll = $('#umClearAll');
+  if (clearAll) clearAll.onclick = async () => {
+    if (!confirm(`ลบข้อความทั้งหมด ${list.length} ฉบับ?`)) return;
+    try { await backendDelete('/api/admin/user-messages'); renderUserMessagesTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   };
 }

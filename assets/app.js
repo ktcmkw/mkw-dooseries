@@ -157,14 +157,15 @@ const SOURCE_ADAPTERS = {
     episodesPath: id => `/alleps/${encodeURIComponent(id)}`,
     normalizeDetail: r => {
       if (!r) return null;
+      const d = r.data || r;
       return {
-        bookId: String(r.id || r.bookId || ''),
-        bookName: r.title || r.bookName || '(ไม่ทราบชื่อ)',
-        coverWap: r.cover || r.coverWap || '',
-        cover: r.cover || '',
-        chapterCount: typeof r.episodes === 'number' ? r.episodes : (r.chapterCount || 0),
-        introduction: r.summary || r.introduction || r.intro || '',
-        tagV3s: Array.isArray(r.tags) ? r.tags.map(t => ({ tagName: String(t) })) : [],
+        bookId: String(d.id || d.bookId || ''),
+        bookName: d.title || d.name || d.bookName || '(ไม่ทราบชื่อ)',
+        coverWap: d.cover || d.coverWap || '',
+        cover: d.cover || '',
+        chapterCount: typeof d.episodes === 'number' ? d.episodes : (d.totalEpisodes || d.chapterCount || 0),
+        introduction: d.summary || d.introduction || d.intro || '',
+        tagV3s: Array.isArray(d.tags) ? d.tags.map(t => ({ tagName: String(t) })) : [],
         playCount: '',
         shelfTime: '',
         corner: null,
@@ -556,6 +557,7 @@ async function openInboxModal() {
           <div id="inboxCount" class="text-xs text-zinc-500 mt-0.5">กำลังโหลด...</div>
         </div>
         <div class="flex items-center gap-2">
+          <button id="inboxSendAdmin" class="text-xs px-3 py-1.5 bg-red-600 hover:bg-red-500 rounded text-white font-bold">✉️ ส่งถึงแอดมิน</button>
           <button id="inboxReadAll" class="text-xs px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded">อ่านทั้งหมด</button>
           <button id="inboxClose" class="w-8 h-8 flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 rounded-full text-zinc-300">✕</button>
         </div>
@@ -568,6 +570,7 @@ async function openInboxModal() {
   document.body.appendChild(overlay);
   overlay.onclick = e => { if (e.target === overlay) closeInboxModal(); };
   document.getElementById('inboxClose').onclick = closeInboxModal;
+  document.getElementById('inboxSendAdmin').onclick = openSendAdminModal;
   document.getElementById('inboxReadAll').onclick = async () => {
     try {
       await backendPost('/api/user/inbox/read-all', {});
@@ -673,6 +676,64 @@ function openMessageDetail(m) {
   document.body.appendChild(overlay);
   overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.closeDetail').onclick = () => overlay.remove();
+}
+
+function openSendAdminModal() {
+  if (document.getElementById('sendAdminModal')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'sendAdminModal';
+  overlay.className = 'fixed inset-0 z-[120] flex items-center justify-center p-4';
+  overlay.style.background = 'rgba(0,0,0,0.75)';
+  overlay.innerHTML = `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full shadow-2xl">
+      <div class="flex items-center justify-between p-4 border-b border-zinc-800">
+        <h4 class="font-black text-lg">✉️ ส่งข้อความถึงแอดมิน</h4>
+        <button id="sendAdmClose" class="w-8 h-8 flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 rounded-full text-zinc-300">✕</button>
+      </div>
+      <form id="sendAdmForm" class="p-4 space-y-3">
+        <div>
+          <label class="text-xs text-zinc-400">หัวข้อ</label>
+          <input id="sendAdmSubject" type="text" maxlength="200" required placeholder="เช่น แจ้งปัญหาเล่นวิดีโอไม่ได้" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm focus:outline-none focus:border-red-500"/>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">เนื้อหา <span id="sendAdmCount" class="text-zinc-600">0/3000</span></label>
+          <textarea id="sendAdmBody" maxlength="3000" rows="6" required placeholder="กรอกข้อความ..." class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-sm focus:outline-none focus:border-red-500 resize-none"></textarea>
+        </div>
+        <div class="text-[11px] text-zinc-500 leading-relaxed">
+          ⚠️ ระบบจะบันทึก IP ของคุณไว้เพื่อตรวจสอบในกรณีรายงานปัญหา / สงสัยพฤติกรรมไม่เหมาะสม
+        </div>
+        <div id="sendAdmMsg" class="text-xs"></div>
+        <div class="flex gap-2 justify-end pt-2">
+          <button type="button" id="sendAdmCancel" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-sm rounded">ยกเลิก</button>
+          <button type="submit" id="sendAdmSubmit" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-bold rounded">📤 ส่ง</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  document.getElementById('sendAdmClose').onclick = close;
+  document.getElementById('sendAdmCancel').onclick = close;
+  const bodyEl = document.getElementById('sendAdmBody');
+  const countEl = document.getElementById('sendAdmCount');
+  bodyEl.oninput = () => { countEl.textContent = `${bodyEl.value.length}/3000`; };
+  document.getElementById('sendAdmForm').onsubmit = async e => {
+    e.preventDefault();
+    const subject = document.getElementById('sendAdmSubject').value.trim();
+    const body = bodyEl.value.trim();
+    const msgEl = document.getElementById('sendAdmMsg');
+    const btn = document.getElementById('sendAdmSubmit');
+    if (!subject && !body) { msgEl.innerHTML = '<span class="text-red-400">กรอกหัวข้อหรือเนื้อหาก่อน</span>'; return; }
+    btn.disabled = true; btn.textContent = 'กำลังส่ง...';
+    try {
+      await backendPost('/api/user/send-to-admin', { subject, body });
+      msgEl.innerHTML = '<span class="text-emerald-400">✓ ส่งสำเร็จ</span>';
+      setTimeout(close, 800);
+    } catch (ex) {
+      msgEl.innerHTML = `<span class="text-red-400">ส่งไม่สำเร็จ: ${escapeHtml(ex.message)}</span>`;
+      btn.disabled = false; btn.textContent = '📤 ส่ง';
+    }
+  };
 }
 
 function pickList(res) {
@@ -1482,7 +1543,7 @@ async function initPlayPage() {
     $('#navEp').innerHTML = html;
     $$('#navEp a').forEach(a => a.onclick = ev => {
       ev.preventDefault();
-      goToEpisode(parseInt(a.dataset.idx, 10), { bookId, source, total, episodes, detail });
+      navEpClickWithCooldown(parseInt(a.dataset.idx, 10), { bookId, source, total, episodes, detail });
     });
   }
 
@@ -1523,6 +1584,47 @@ async function initPlayPage() {
 
   // 4) Show gate (login / upgrade / pay)
   return renderAccessGate(bookId, index, ep, access, u, source);
+}
+
+// EP click cooldown — กันกดถี่ๆ (5 วิ) นอก fullscreen
+let _epCooldownActive = false;
+function navEpClickWithCooldown(targetIdx, ctx) {
+  if (_epCooldownActive) return;
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsEl) return goToEpisode(targetIdx, ctx);
+  const links = $$('#navEp a');
+  if (!links.length) return goToEpisode(targetIdx, ctx);
+  const targetA = links.find(a => parseInt(a.dataset.idx, 10) === targetIdx);
+  if (!targetA) return goToEpisode(targetIdx, ctx);
+  _epCooldownActive = true;
+  const orig = new Map();
+  links.forEach(a => {
+    orig.set(a, { className: a.className, html: a.innerHTML });
+    if (a !== targetA) a.classList.add('opacity-30', 'pointer-events-none', 'grayscale');
+    else a.classList.add('ring-2', 'ring-amber-400');
+  });
+  let s = 5;
+  const restore = () => {
+    links.forEach(a => {
+      const o = orig.get(a);
+      if (!o) return;
+      a.className = o.className;
+      a.innerHTML = o.html;
+    });
+    _epCooldownActive = false;
+  };
+  const tick = () => {
+    targetA.innerHTML = `${targetIdx} <span class="ml-1 text-amber-300 font-black">${s}s</span>`;
+    if (s <= 0) {
+      clearInterval(timer);
+      restore();
+      goToEpisode(targetIdx, ctx);
+      return;
+    }
+    s--;
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
 }
 
 // In-place ตอนถัดไป — ไม่โหลดหน้าใหม่ (TikTok-style smooth transition)
