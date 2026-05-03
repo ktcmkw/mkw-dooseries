@@ -68,17 +68,105 @@ const auth = {
   headers() { return this.token ? { Authorization: 'Bearer ' + this.token } : {}; },
 };
 
+// ---------- Online Points ticker (นับเฉพาะตอนวิดีโอเล่น — pause/offline จะหยุด) ----------
+// ทุก 60 วิของการเล่นจะส่งไป backend → +10 พ้อย (cap วันละ 10000)
+const pointsTicker = {
+  intervalId: null,
+  accumSec: 0,
+  video: null,
+  onUpdate: null,
+  attach(video) {
+    this.detach();
+    if (!auth.user) return;
+    this.video = video;
+    this.intervalId = setInterval(() => this._onSecond(), 1000);
+  },
+  detach() {
+    if (this.intervalId) { clearInterval(this.intervalId); this.intervalId = null; }
+    this.video = null;
+    this.accumSec = 0;
+  },
+  _onSecond() {
+    if (!this.video || this.video.paused || this.video.ended || document.hidden) return;
+    this.accumSec++;
+    if (this.accumSec >= 60) this._flush();
+  },
+  async _flush() {
+    if (!auth.user) { this.accumSec = 0; return; }
+    const seconds = this.accumSec;
+    this.accumSec = 0;
+    try {
+      const r = await backendPost('/api/user/points/tick', { seconds });
+      auth.user.points = r.points;
+      auth.user.pointsToday = r.pointsToday;
+      if (this.onUpdate) this.onUpdate(auth.user);
+      updatePointsUi();
+    } catch { /* เงียบ — accumSec reset แล้ว */ }
+  },
+};
+
+function updatePointsUi() {
+  const u = auth.user;
+  if (!u) return;
+  const hp = document.getElementById('headerPoints');
+  if (hp) hp.textContent = (u.points || 0).toLocaleString();
+  const pt = document.getElementById('popupPointsToday');
+  const pb = document.getElementById('popupPointsTotal');
+  if (pt) pt.textContent = `${(u.pointsToday || 0).toLocaleString()}/${(u.pointsDailyCap || 10000).toLocaleString()}`;
+  if (pb) pb.textContent = (u.points || 0).toLocaleString();
+}
+
+function showPointsPopup() {
+  if (!auth.user) return;
+  if (localStorage.getItem('mkw_points_popup_hidden') === '1') return;
+  if (document.getElementById('pointsPopup')) return;
+  const u = auth.user;
+  const popup = document.createElement('div');
+  popup.id = 'pointsPopup';
+  popup.className = 'fixed right-3 bottom-20 z-[9999] w-[210px] bg-black/85 backdrop-blur-sm border border-amber-500/40 rounded-xl p-3 shadow-2xl text-xs';
+  popup.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <span class="font-bold text-amber-300 text-sm">⭐ พ้อยออนไลน์</span>
+      <button id="closePointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ปิด">✕</button>
+    </div>
+    <div class="space-y-1">
+      <div class="flex items-center justify-between"><span class="text-zinc-400">วันนี้:</span><span id="popupPointsToday" class="font-bold text-amber-300">${(u.pointsToday || 0).toLocaleString()}/${(u.pointsDailyCap || 10000).toLocaleString()}</span></div>
+      <div class="flex items-center justify-between"><span class="text-zinc-400">คงเหลือ:</span><span id="popupPointsTotal" class="font-bold text-amber-400">${(u.points || 0).toLocaleString()}</span></div>
+      <div class="text-[10px] text-zinc-500 text-center pt-1 border-t border-zinc-800 mt-1">1 นาที = 10 พ้อย • 100 พ้อย = 1 MKW</div>
+      <a href="/topup" class="block mt-1 text-center text-[11px] text-amber-300 hover:text-amber-200 underline">แลกเป็น MKW →</a>
+    </div>
+  `;
+  document.body.appendChild(popup);
+  const moveOnFs = () => {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    const target = fsEl || document.body;
+    if (popup.parentElement !== target) target.appendChild(popup);
+  };
+  document.addEventListener('fullscreenchange', moveOnFs);
+  document.addEventListener('webkitfullscreenchange', moveOnFs);
+  popup.querySelector('#closePointsPopup').onclick = () => {
+    popup.remove();
+    document.removeEventListener('fullscreenchange', moveOnFs);
+    document.removeEventListener('webkitfullscreenchange', moveOnFs);
+    localStorage.setItem('mkw_points_popup_hidden', '1');
+  };
+}
+
 // ---------- API clients ----------
 async function apiGet(path, source) {
   const src = source || 'dramabox';
-  const res = await fetch(apiBase(src) + path);
-  if (!res.ok) {
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(apiBase(src) + path);
+    if (res.ok) return res.json();
     const body = await res.text().catch(() => '');
-    const err = new Error(`HTTP ${res.status} — [${src}] ${path}`);
-    err.status = res.status; err.endpoint = path; err.source = src; err.body = body.slice(0, 400);
-    throw err;
+    lastErr = new Error(`HTTP ${res.status} — [${src}] ${path}`);
+    lastErr.status = res.status; lastErr.endpoint = path; lastErr.source = src; lastErr.body = body.slice(0, 400);
+    // Retry เฉพาะ 5xx (อัปสตรีมล่มชั่วคราว เช่น DramaWave 503 "Sistem sedang sibuk")
+    if (res.status < 500 || res.status >= 600 || attempt === 2) throw lastErr;
+    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
   }
-  return res.json();
+  throw lastErr;
 }
 
 // Tag every drama item with __source สำหรับ render badge + URL
@@ -329,7 +417,10 @@ async function apiGetList(pathOrSpec) {
 async function backendGet(path) {
   const res = await fetch(path, { headers: auth.headers() });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
+  if (!res.ok) {
+    if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
+    const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
+  }
   return data;
 }
 
@@ -340,15 +431,40 @@ async function backendPost(path, body) {
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; e.data = data; throw e; }
+  if (!res.ok) {
+    if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
+    const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; e.data = data; throw e;
+  }
   return data;
 }
 
 async function backendDelete(path) {
   const res = await fetch(path, { method: 'DELETE', headers: auth.headers() });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
+  if (!res.ok) {
+    if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
+    const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
+  }
   return data;
+}
+
+function showIpBanned(data) {
+  if (document.getElementById('ipBannedOverlay')) return;
+  const until = data?.until ? new Date(data.until) : null;
+  const untilStr = until && !isNaN(until.getTime()) ? until.toLocaleString('th-TH') : '';
+  const msg = data?.message || 'ทำผิดกฎของเว็บไซต์';
+  const overlay = document.createElement('div');
+  overlay.id = 'ipBannedOverlay';
+  overlay.className = 'fixed inset-0 z-[9999] flex items-center justify-center p-4';
+  overlay.style.background = 'rgba(0,0,0,0.95)';
+  overlay.innerHTML = `
+    <div class="max-w-md w-full bg-zinc-900 border-2 border-red-600 rounded-2xl p-6 text-center shadow-2xl">
+      <div class="text-6xl mb-3">🚫</div>
+      <h2 class="text-2xl font-black text-red-400 mb-2">IP ของคุณถูกระงับ</h2>
+      <p class="text-zinc-300 mb-3">${escapeHtml(msg)}</p>
+      ${untilStr ? `<div class="text-xs text-zinc-500">ระงับถึง: <span class="text-amber-300">${escapeHtml(untilStr)}</span></div>` : ''}
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
 // ---------- Public site config (freeMode promo ฯลฯ) ----------
@@ -608,15 +724,21 @@ function renderInboxList() {
     const dateStr = isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
     const unreadDot = m.read ? '' : '<span class="w-2 h-2 rounded-full bg-red-500 inline-block mr-2"></span>';
     const fromColor = m.from === 'admin' ? 'text-red-300' : (m.from === 'system' ? 'text-emerald-300' : 'text-zinc-400');
+    const giftBadge = m.gift
+      ? (m.gift.claimed
+          ? '<span class="text-[10px] px-1.5 py-0.5 bg-zinc-800 text-zinc-400 rounded ml-2">🎁 เปิดแล้ว</span>'
+          : '<span class="text-[10px] px-1.5 py-0.5 bg-amber-500 text-black rounded font-bold ml-2 animate-pulse">🎁 ของขวัญ!</span>')
+      : '';
     return `
-      <div data-id="${escapeHtml(m.id)}" class="msg-item group ${m.read ? 'bg-zinc-950/50' : 'bg-zinc-800/50 border-red-500/30'} border border-zinc-800 rounded-lg p-3 cursor-pointer hover:bg-zinc-800">
+      <div data-id="${escapeHtml(m.id)}" class="msg-item group ${m.read ? 'bg-zinc-950/50' : 'bg-zinc-800/50 border-red-500/30'} ${m.gift && !m.gift.claimed ? 'border-amber-500/50 bg-amber-500/5' : ''} border border-zinc-800 rounded-lg p-3 cursor-pointer hover:bg-zinc-800">
         <div class="flex items-start gap-2">
           <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 text-xs mb-1">
+            <div class="flex items-center gap-2 text-xs mb-1 flex-wrap">
               ${unreadDot}
               <span class="font-bold ${fromColor}">${escapeHtml(m.from || 'system')}</span>
               <span class="text-zinc-600">•</span>
               <span class="text-zinc-500">${escapeHtml(dateStr)}</span>
+              ${giftBadge}
             </div>
             <div class="font-bold text-sm text-zinc-100 truncate">${escapeHtml(m.subject || '(ไม่มีหัวข้อ)')}</div>
             <div class="text-xs text-zinc-400 truncate mt-1">${escapeHtml(m.body || '')}</div>
@@ -662,13 +784,32 @@ function openMessageDetail(m) {
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 z-[110] flex items-center justify-center p-4';
   overlay.style.background = 'rgba(0,0,0,0.7)';
+
+  const hasUnclaimedGift = m.gift && !m.gift.claimed;
+  const giftBox = m.gift ? (m.gift.claimed
+    ? `<div class="mt-4 p-3 rounded-lg bg-zinc-800/50 border border-zinc-700 text-xs text-zinc-400">
+         <div class="flex items-center gap-2 mb-1"><span>🎁</span><span class="font-bold">ของขวัญที่ได้รับแล้ว</span></div>
+         ${m.gift.coins > 0 ? `<div>💰 +${m.gift.coins} MKW coins</div>` : ''}
+         ${m.gift.vipDays > 0 ? `<div>👑 VIP +${m.gift.vipDays} วัน</div>` : ''}
+       </div>`
+    : `<div id="giftPanel" class="mt-4 p-5 rounded-xl bg-gradient-to-br from-amber-500/20 via-yellow-500/10 to-amber-500/20 border-2 border-amber-500/50 text-center">
+         <div id="giftIcon" class="text-7xl mb-2" style="animation: giftWobble 1.2s ease-in-out infinite">🎁</div>
+         <div class="text-amber-300 font-black text-lg mb-1">คุณได้รับของขวัญ!</div>
+         <div class="text-xs text-zinc-300 mb-3">
+           ${m.gift.coins > 0 ? `<span class="inline-block px-2 py-0.5 bg-amber-500/20 rounded mx-1">💰 ${m.gift.coins} MKW</span>` : ''}
+           ${m.gift.vipDays > 0 ? `<span class="inline-block px-2 py-0.5 bg-amber-500/20 rounded mx-1">👑 VIP ${m.gift.vipDays} วัน</span>` : ''}
+         </div>
+         <button id="claimGiftBtn" class="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black rounded-lg shadow-lg">✨ เปิดของขวัญ</button>
+         <div id="giftMsg" class="text-xs mt-2"></div>
+       </div>`) : '';
+
   overlay.innerHTML = `
-    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full max-h-[80vh] flex flex-col shadow-2xl">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full max-h-[85vh] flex flex-col shadow-2xl">
       <div class="p-4 border-b border-zinc-800">
         <div class="text-xs text-zinc-500 mb-1">จาก <span class="font-bold ${m.from === 'admin' ? 'text-red-300' : 'text-emerald-300'}">${escapeHtml(m.from || 'system')}</span> • ${escapeHtml(dateStr)}</div>
         <h4 class="font-black text-lg">${escapeHtml(m.subject || '(ไม่มีหัวข้อ)')}</h4>
       </div>
-      <div class="flex-1 overflow-y-auto p-4 text-sm text-zinc-200 whitespace-pre-line leading-relaxed">${escapeHtml(m.body || '(ไม่มีข้อความ)')}</div>
+      <div class="flex-1 overflow-y-auto p-4 text-sm text-zinc-200 whitespace-pre-line leading-relaxed">${escapeHtml(m.body || '(ไม่มีข้อความ)')}${giftBox}</div>
       <div class="p-3 border-t border-zinc-800 text-right">
         <button class="closeDetail px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-sm rounded">ปิด</button>
       </div>
@@ -676,6 +817,44 @@ function openMessageDetail(m) {
   document.body.appendChild(overlay);
   overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
   overlay.querySelector('.closeDetail').onclick = () => overlay.remove();
+
+  if (hasUnclaimedGift) {
+    const btn = overlay.querySelector('#claimGiftBtn');
+    const icon = overlay.querySelector('#giftIcon');
+    const msgEl = overlay.querySelector('#giftMsg');
+    const panel = overlay.querySelector('#giftPanel');
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'กำลังเปิด...';
+      icon.style.animation = 'giftShake 0.4s ease-in-out 3';
+      try {
+        const r = await backendPost('/api/user/inbox/claim-gift', { messageId: m.id });
+        // sync auth.user จาก response
+        if (auth.user) {
+          if (typeof r.coins === 'number') auth.user.coins = r.coins;
+          if (r.role) auth.user.role = r.role;
+          if (r.vipExpires !== undefined) auth.user.vipExpires = r.vipExpires;
+          if (typeof updatePointsUi === 'function') updatePointsUi();
+        }
+        // mark local
+        m.gift.claimed = true;
+        m.gift.claimedAt = Date.now();
+        // burst animation
+        icon.textContent = '🎉';
+        icon.style.animation = 'giftBurst 0.6s ease-out';
+        const rewards = [];
+        if (r.coinsAdded > 0) rewards.push(`<div class="text-amber-300 font-black">💰 +${r.coinsAdded} MKW</div>`);
+        if (r.vipDaysAdded > 0) rewards.push(`<div class="text-amber-300 font-black">👑 VIP +${r.vipDaysAdded} วัน</div>`);
+        msgEl.innerHTML = `<div class="space-y-1 mt-2">${rewards.join('')}<div class="text-emerald-400 mt-1">✓ ได้รับเรียบร้อย</div></div>`;
+        btn.style.display = 'none';
+        renderInboxList();
+      } catch (ex) {
+        msgEl.innerHTML = `<span class="text-red-400">เปิดไม่สำเร็จ: ${escapeHtml(ex.message)}</span>`;
+        btn.disabled = false;
+        btn.textContent = '✨ เปิดของขวัญ';
+      }
+    };
+  }
 }
 
 function openSendAdminModal() {
@@ -790,14 +969,14 @@ function renderHeader(active) {
           </div>
         </div>
         <div class="mt-3 flex items-center justify-between bg-amber-500/10 border border-amber-500/30 rounded p-2">
-          <span class="text-xs text-zinc-400">เหรียญ NSV</span>
+          <span class="text-xs text-zinc-400">เหรียญ MKW</span>
           <span class="font-bold text-amber-400">🪙 ${(u.coins || 0).toLocaleString()}</span>
         </div>
       </div>
       <div class="py-2 text-sm">
         <a href="/profile" class="flex items-center gap-3 px-4 py-2 hover:bg-zinc-800"><span>👤</span><span>โปรไฟล์ / รหัสผ่าน</span></a>
         <a href="/history" class="flex items-center gap-3 px-4 py-2 hover:bg-zinc-800"><span>🕐</span><span>ประวัติการดู</span></a>
-        <a href="/topup" class="flex items-center gap-3 px-4 py-2 hover:bg-zinc-800"><span>💰</span><span>เติมเงิน / VIP</span></a>
+        <a href="/topup" class="flex items-center gap-3 px-4 py-2 hover:bg-zinc-800"><span>💰</span><span>แลกพ้อย / เติมเงิน / VIP</span></a>
         ${u.role === 'admin' ? `<a href="/admin" class="flex items-center gap-3 px-4 py-2 hover:bg-zinc-800 text-red-300"><span>⚙</span><span>Admin Dashboard</span></a>` : ''}
       </div>
       <div class="border-t border-zinc-800 py-2">
@@ -821,7 +1000,8 @@ function renderHeader(active) {
           ${links.map(l => `<a href="${l.href}" class="nav-link ${active === l.key ? 'active' : ''}">${escapeHtml(l.label)}</a>`).join('')}
         </nav>
         <div class="flex-1"></div>
-        <a href="/topup" class="text-xs px-2.5 sm:px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold whitespace-nowrap shrink-0">💰<span class="hidden sm:inline ml-1">เติมเงิน</span></a>
+        ${u ? `<a href="/topup" class="hidden sm:inline-flex items-center gap-1 text-xs px-2.5 py-1.5 bg-zinc-900 border border-amber-500/30 hover:border-amber-500 rounded-lg text-amber-300 font-bold whitespace-nowrap shrink-0" title="พ้อยสะสม (คลิกเพื่อแลกเป็น MKW)">⭐<span id="headerPoints">${(u.points || 0).toLocaleString()}</span></a>` : ''}
+        <a href="/topup" class="text-xs px-2.5 sm:px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold whitespace-nowrap shrink-0">💰<span class="hidden sm:inline ml-1">แลกพ้อย/เติมเงิน</span></a>
         ${u ? `
         <button id="inboxBtn" class="relative shrink-0 w-9 h-9 flex items-center justify-center bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-full transition-colors" aria-label="กล่องจดหมาย" title="กล่องจดหมาย">
           <svg class="w-5 h-5 text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
@@ -942,7 +1122,10 @@ function dramaCard(d) {
   const firstGenre = (d.genre || '').split(',')[0].trim();
   const tLower = title.toLowerCase();
   // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
-  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
+  // DramaWave/ShortMax เป็นแพลตฟอร์มพากย์ไทยอยู่แล้ว — title มี Thai chars = พากย์ไทย
+  const hasThaiChars = /[฀-๿]/.test(title);
+  const nativeThaiSource = (src === 'dramawave' || src === 'shortmax') && hasThaiChars;
+  const isThaiDub = nativeThaiSource || title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
   const isSubThai = !isThaiDub && (tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
   const langBadge = isThaiDub
     ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">พากย์ไทย</div>'
@@ -1504,7 +1687,7 @@ async function initPlayPage() {
     <div class="ml-auto flex items-center gap-2 text-xs flex-wrap">
       ${roleBadge(u.role)}
       ${u.role === 'vip' && u.vipExpires ? `<span class="text-amber-300">หมดอายุ ${new Date(u.vipExpires).toLocaleDateString('th-TH')}</span>` : ''}
-      <span class="text-amber-400 font-bold">🪙 ${(u.coins || 0).toLocaleString()} NSV</span>
+      <span class="text-amber-400 font-bold">🪙 ${(u.coins || 0).toLocaleString()} MKW</span>
       <span class="text-zinc-400">@${escapeHtml(u.username)}</span>
     </div>
   ` : `<div class="ml-auto text-xs text-zinc-500">ยังไม่ได้ login • <a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="text-red-400 hover:underline">เข้าสู่ระบบ</a></div>`;
@@ -1664,7 +1847,7 @@ async function goToEpisode(newIndex, ctx) {
     <div class="ml-auto flex items-center gap-2 text-xs flex-wrap">
       ${roleBadge(u.role)}
       ${u.role === 'vip' && u.vipExpires ? `<span class="text-amber-300">หมดอายุ ${new Date(u.vipExpires).toLocaleDateString('th-TH')}</span>` : ''}
-      <span class="text-amber-400 font-bold">🪙 ${(u.coins || 0).toLocaleString()} NSV</span>
+      <span class="text-amber-400 font-bold">🪙 ${(u.coins || 0).toLocaleString()} MKW</span>
       <span class="text-zinc-400">@${escapeHtml(u.username)}</span>
     </div>
   ` : `<div class="ml-auto text-xs text-zinc-500">ยังไม่ได้ login • <a href="/login?next=${encodeURIComponent(location.pathname + location.search)}" class="text-red-400 hover:underline">เข้าสู่ระบบ</a></div>`;
@@ -1780,15 +1963,15 @@ function renderAccessGate(bookId, index, ep, access, user, source) {
   }
 
   if (reason === 'need_coin') {
-    const cost = access.cost || 50;
+    const cost = access.cost || 1;
     const haveEnough = (user.coins || 0) >= cost;
     $('#videoWrap').innerHTML = `
       <div class="w-full h-full flex items-center justify-center text-center p-6">
         <div>
           <div class="text-5xl mb-3">🪙</div>
           <div class="font-bold text-zinc-200 mb-1">EP ${index} ต้องปลดล็อก</div>
-          <div class="text-sm text-zinc-400 mb-1">ราคา: <strong class="text-amber-400">${cost} NSV Coin</strong></div>
-          <div class="text-xs text-zinc-500 mb-4">เหรียญของคุณ: ${(user.coins || 0).toLocaleString()} NSV</div>
+          <div class="text-sm text-zinc-400 mb-1">ราคา: <strong class="text-amber-400">${cost} MKW Coin</strong></div>
+          <div class="text-xs text-zinc-500 mb-4">เหรียญของคุณ: ${(user.coins || 0).toLocaleString()} MKW</div>
           ${haveEnough
             ? `<button id="unlockBtn" class="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-black rounded-lg font-bold">ปลดล็อกด้วย ${cost} coin</button>`
             : `<a href="/topup" class="inline-block px-5 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold">เติมเหรียญ</a>`
@@ -1922,6 +2105,10 @@ async function playEpisode(ep, ctx) {
 
   // Auto-next + next ep button + swipe
   setupAutoNext(ep, video, ctx, ctrl, playerOpts);
+
+  // Online Points — นับเฉพาะตอนวิดีโอเล่น + popup ลอย
+  pointsTicker.attach(video);
+  showPointsPopup();
 }
 
 function buildCustomControls(video, wrap) {
@@ -2484,12 +2671,12 @@ async function initTopupPage() {
   await mountPage('', `
     <div class="max-w-4xl mx-auto">
       <h2 class="text-2xl sm:text-3xl font-black mb-1">เติมเงิน / แลก VIP</h2>
-      <p class="text-sm text-zinc-500 mb-6">1 บาท = 1 NSV Coin • ปลดล็อกตอนละ 50 coin • หรือสมัคร VIP ดูฟรีทุกตอน</p>
+      <p class="text-sm text-zinc-500 mb-6">1 บาท = 1 MKW Coin • ปลดล็อกตอนละ 1 coin • หรือสมัคร VIP ดูฟรีทุกตอน</p>
 
       <div class="grid sm:grid-cols-2 gap-3 mb-8">
         <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
           <div class="text-sm text-zinc-400">เหรียญของคุณ</div>
-          <div class="text-3xl font-black text-amber-400">${(u.coins || 0).toLocaleString()} <span class="text-base">NSV</span></div>
+          <div class="text-3xl font-black text-amber-400">${(u.coins || 0).toLocaleString()} <span class="text-base">MKW</span></div>
         </div>
         <div class="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
           <div class="text-sm text-zinc-400">สถานะสมาชิก</div>
@@ -2501,7 +2688,7 @@ async function initTopupPage() {
       <p class="text-xs text-zinc-500 mb-3">VIP ดูทุกตอนฟรีตลอดอายุสมาชิก (ต่ออายุได้)</p>
       <div id="vipPackages" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8"></div>
 
-      <h3 class="font-bold text-lg mb-3">💰 เติม NSV Coin</h3>
+      <h3 class="font-bold text-lg mb-3">💰 เติม MKW Coin</h3>
       <p class="text-xs text-zinc-500 mb-3">เลือกจำนวนที่ต้องการเติม → ระบบจะกรอกยอดในช่องสลิปให้ → โอนเงินแล้วแนบสลิปด้านล่าง</p>
       <div id="packages" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8"></div>
 
@@ -2525,6 +2712,31 @@ async function initTopupPage() {
         </div>
         <button class="mt-4 w-full sm:w-auto px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold">ส่งสลิปให้ admin</button>
       </form>
+
+      <h3 class="font-bold text-lg mb-3">⭐ แลกพ้อยออนไลน์เป็น MKW Coin</h3>
+      <p class="text-xs text-zinc-500 mb-3">ดูวิดีโอเพื่อรับพ้อย: 1 นาที = 10 พ้อย (วันละสูงสุด 10,000 พ้อย) • อัตราแลก 100 พ้อย = 1 MKW Coin</p>
+      <div class="bg-amber-500/5 border border-amber-500/30 rounded-xl p-5 mb-8">
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <div class="text-xs text-zinc-400">พ้อยคงเหลือ</div>
+            <div class="text-3xl font-black text-amber-300">${(u.points || 0).toLocaleString()}</div>
+          </div>
+          <div>
+            <div class="text-xs text-zinc-400">พ้อยวันนี้</div>
+            <div class="text-base font-bold text-zinc-200">${(u.pointsToday || 0).toLocaleString()} <span class="text-xs text-zinc-500">/ ${(u.pointsDailyCap || 10000).toLocaleString()}</span></div>
+          </div>
+        </div>
+        <form id="redeemForm" class="flex gap-2">
+          <input id="redeemAmt" type="number" min="100" step="100" placeholder="จำนวนพ้อย (ขั้นต่ำ 100)" class="flex-1 px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-amber-500 text-white"/>
+          <button class="px-5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold">แลก</button>
+        </form>
+        <div class="mt-2 flex gap-2 flex-wrap text-xs">
+          <button type="button" data-r="100" class="redeem-preset px-2.5 py-1 bg-zinc-800 hover:bg-amber-500/20 rounded">100 → 1 MKW</button>
+          <button type="button" data-r="500" class="redeem-preset px-2.5 py-1 bg-zinc-800 hover:bg-amber-500/20 rounded">500 → 5 MKW</button>
+          <button type="button" data-r="1000" class="redeem-preset px-2.5 py-1 bg-zinc-800 hover:bg-amber-500/20 rounded">1000 → 10 MKW</button>
+          <button type="button" data-r="max" class="redeem-preset px-2.5 py-1 bg-zinc-800 hover:bg-amber-500/20 rounded">สูงสุด</button>
+        </div>
+      </div>
 
       <h3 class="font-bold text-lg mb-3">🎁 แลก Gift Card</h3>
       <form id="giftForm" class="flex gap-2 mb-8">
@@ -2570,7 +2782,7 @@ async function initTopupPage() {
     <button data-id="${p.id}" data-price="${p.price}" data-coins="${p.coins}" class="pkg-btn bg-zinc-900 hover:bg-zinc-800 border-2 border-zinc-800 hover:border-amber-500 rounded-xl p-4 text-left transition-all">
       <div class="text-xs text-zinc-500 mb-1">${escapeHtml(p.label || '')}</div>
       <div class="text-2xl font-black text-amber-400 mb-1">${p.coins.toLocaleString()}</div>
-      <div class="text-xs text-zinc-400">NSV Coin</div>
+      <div class="text-xs text-zinc-400">MKW Coin</div>
       <div class="mt-2 pt-2 border-t border-zinc-800 text-sm font-bold">฿${p.price.toLocaleString()}</div>
     </button>
   `).join('');
@@ -2581,7 +2793,7 @@ async function initTopupPage() {
     const coins = parseInt(b.dataset.coins, 10);
     const amt = $('#slipAmount');
     amt.value = price;
-    $('#slipNote').value = `เติม ${coins.toLocaleString()} NSV Coin`;
+    $('#slipNote').value = `เติม ${coins.toLocaleString()} MKW Coin`;
     document.getElementById('slipForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     amt.focus();
   });
@@ -2616,6 +2828,25 @@ async function initTopupPage() {
     }
   };
 
+  // Redeem points → MKW
+  $$('.redeem-preset').forEach(b => b.onclick = () => {
+    const r = b.dataset.r;
+    const v = r === 'max' ? Math.floor((auth.user?.points || 0) / 100) * 100 : parseInt(r, 10);
+    $('#redeemAmt').value = v;
+  });
+  $('#redeemForm').onsubmit = async e => {
+    e.preventDefault();
+    const points = parseInt($('#redeemAmt').value, 10) || 0;
+    if (points < 100) { alert('ขั้นต่ำ 100 พ้อย (100 พ้อย = 1 MKW Coin)'); return; }
+    try {
+      const r = await backendPost('/api/user/redeem-points', { points });
+      $('#msg').innerHTML = `<div class="info-banner rounded-lg p-4"><div class="font-bold mb-1">⭐ แลกพ้อยสำเร็จ</div><div class="text-sm">+${r.coinsAdded} MKW Coin • ยอดรวม ${r.newBalance.toLocaleString()} MKW • พ้อยคงเหลือ ${r.points.toLocaleString()}</div></div>`;
+      setTimeout(() => location.reload(), 1500);
+    } catch (ex) {
+      $('#msg').innerHTML = `<div class="error-banner rounded-lg p-3 text-sm">${escapeHtml(ex.message)}</div>`;
+    }
+  };
+
   // Giftcard
   $('#giftForm').onsubmit = async e => {
     e.preventDefault();
@@ -2623,7 +2854,12 @@ async function initTopupPage() {
     if (!code) return;
     try {
       const r = await backendPost('/api/giftcard/redeem', { code });
-      $('#msg').innerHTML = `<div class="info-banner rounded-lg p-4"><div class="font-bold mb-1">🎁 แลก Gift Card สำเร็จ</div><div class="text-sm">+${r.coinsAdded.toLocaleString()} NSV Coin • ยอดรวม ${r.newBalance.toLocaleString()} NSV</div></div>`;
+      if (r.type === 'vip') {
+        const expires = r.vipExpires ? new Date(r.vipExpires).toLocaleString('th-TH') : '';
+        $('#msg').innerHTML = `<div class="info-banner rounded-lg p-4"><div class="font-bold mb-1">⭐ แลก Gift Card VIP สำเร็จ</div><div class="text-sm">+${r.daysAdded} วัน${expires ? ` • หมดอายุ ${expires}` : ''}</div></div>`;
+      } else {
+        $('#msg').innerHTML = `<div class="info-banner rounded-lg p-4"><div class="font-bold mb-1">🎁 แลก Gift Card สำเร็จ</div><div class="text-sm">+${(r.coinsAdded || 0).toLocaleString()} MKW Coin • ยอดรวม ${(r.newBalance || 0).toLocaleString()} MKW</div></div>`;
+      }
       setTimeout(() => location.reload(), 1500);
     } catch (ex) {
       $('#msg').innerHTML = `<div class="error-banner rounded-lg p-3 text-sm">${escapeHtml(ex.message)}</div>`;
@@ -2741,7 +2977,7 @@ async function initProfilePage() {
         </div>
         <div class="grid grid-cols-2 gap-3 text-sm">
           <div class="bg-amber-500/10 border border-amber-500/30 rounded p-3">
-            <div class="text-xs text-zinc-400">เหรียญ NSV</div>
+            <div class="text-xs text-zinc-400">เหรียญ MKW</div>
             <div class="font-black text-amber-400 text-xl">${(u.coins || 0).toLocaleString()}</div>
           </div>
           <div class="bg-zinc-800/50 rounded p-3">
@@ -2850,7 +3086,7 @@ function renderPurchaseHistory(container, d) {
       <div class="bg-zinc-800/50 rounded p-2 text-center">
         <div class="text-[10px] text-zinc-500">เติมสะสม</div>
         <div class="text-lg font-black text-amber-400">${totalCoin.toLocaleString()}</div>
-        <div class="text-[10px] text-zinc-500">NSV</div>
+        <div class="text-[10px] text-zinc-500">MKW</div>
       </div>
       <div class="bg-zinc-800/50 rounded p-2 text-center">
         <div class="text-[10px] text-zinc-500">จ่ายจริง</div>
@@ -2879,7 +3115,7 @@ function renderPurchaseHistory(container, d) {
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 flex-wrap">
                 ${statusBadge(s.status)}
-                <span class="font-bold text-amber-400">+${(s.amount || 0).toLocaleString()} NSV</span>
+                <span class="font-bold text-amber-400">+${(s.amount || 0).toLocaleString()} MKW</span>
                 <span class="text-zinc-500">${fmt(s.uploadedAt)}</span>
               </div>
               ${s.note ? `<div class="text-zinc-400 mt-0.5">${escapeHtml(s.note)}</div>` : ''}
@@ -2901,7 +3137,7 @@ function renderPurchaseHistory(container, d) {
           <div class="flex items-center justify-between text-xs px-3 py-1.5 bg-zinc-950/50 border border-zinc-800/50 rounded">
             <span class="text-zinc-500">${fmt(t.at)}</span>
             <span class="text-zinc-400 flex-1 mx-2 truncate">${escapeHtml(String(t.packageId || ''))}</span>
-            <span class="font-bold text-amber-400">+${(t.coins || 0).toLocaleString()} NSV</span>
+            <span class="font-bold text-amber-400">+${(t.coins || 0).toLocaleString()} MKW</span>
           </div>
         `).join('')}
         ${topups.length > 20 ? `<div class="text-[10px] text-zinc-600 text-center pt-1">แสดง 20 รายการล่าสุดจาก ${topups.length}</div>` : ''}
@@ -2918,7 +3154,7 @@ function renderPurchaseHistory(container, d) {
           <div class="flex items-center justify-between text-xs px-3 py-1.5 bg-purple-950/20 border border-purple-900/50 rounded">
             <span class="text-zinc-500">${fmt(v.at)}</span>
             <span class="text-purple-200 flex-1 mx-2 truncate">${escapeHtml(v.packageLabel || v.packageId || '')} (${v.days} วัน)</span>
-            <span class="font-bold text-purple-300">-${(v.coinsPaid || 0).toLocaleString()} NSV</span>
+            <span class="font-bold text-purple-300">-${(v.coinsPaid || 0).toLocaleString()} MKW</span>
           </div>
         `).join('')}
       </div>
@@ -2948,7 +3184,7 @@ async function initPrivacyPage() {
       <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
         <li><strong class="text-zinc-100">ข้อมูลบัญชี:</strong> username, รหัสผ่าน (เก็บแบบ hash), อีเมล Google (กรณี login ผ่าน OAuth)</li>
         <li><strong class="text-zinc-100">ข้อมูลการใช้งาน:</strong> ประวัติการรับชม รายการที่ปลดล็อก ตอนล่าสุดที่ดูค้างไว้</li>
-        <li><strong class="text-zinc-100">ข้อมูลธุรกรรม:</strong> การเติม NSV Coin, การซื้อ VIP, สลิปโอนเงินที่อัพโหลดให้ admin ตรวจ</li>
+        <li><strong class="text-zinc-100">ข้อมูลธุรกรรม:</strong> การเติม MKW Coin, การซื้อ VIP, สลิปโอนเงินที่อัพโหลดให้ admin ตรวจ</li>
         <li><strong class="text-zinc-100">ข้อมูลทางเทคนิค:</strong> IP address, User-Agent, เวลาเข้าใช้งาน (สำหรับตรวจการใช้งานผิดปกติ)</li>
         <li><strong class="text-zinc-100">Local Storage:</strong> token เข้าสู่ระบบ, การตั้งค่าแหล่งซีรีส์ (DramaBox / Melolo), ค่าจดจำการเล่นอัตโนมัติ</li>
       </ul>
@@ -2957,7 +3193,7 @@ async function initPrivacyPage() {
       <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
         <li>ให้บริการรับชมซีรีส์และบันทึกความคืบหน้าการดู</li>
         <li>ยืนยันตัวตนผ่าน username/password หรือ Google OAuth</li>
-        <li>ดำเนินธุรกรรมเหรียญ NSV และสมาชิก VIP</li>
+        <li>ดำเนินธุรกรรมเหรียญ MKW และสมาชิก VIP</li>
         <li>ปรับปรุงคุณภาพบริการและประสบการณ์การใช้งาน</li>
         <li>ป้องกันการใช้งานผิดปกติ การโจรกรรมบัญชี และการละเมิดข้อกำหนด</li>
       </ul>
@@ -3020,14 +3256,14 @@ async function initTermsPage() {
       <h2 class="text-xl font-bold mt-8 mb-3">3. เนื้อหาและการรับชม</h2>
       <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
         <li>เว็บไซต์รวบรวมซีรีส์จากหลายแพลตฟอร์ม (DramaBox, Melolo) ผ่าน API ที่ได้รับอนุญาต</li>
-        <li>บางตอนรับชมได้ฟรี ส่วนที่เหลือต้องใช้ NSV Coin หรือสมาชิก VIP</li>
+        <li>บางตอนรับชมได้ฟรี ส่วนที่เหลือต้องใช้ MKW Coin หรือสมาชิก VIP</li>
         <li>เราสงวนสิทธิ์เปลี่ยนแปลง เพิ่ม หรือถอนเนื้อหาได้ตลอดเวลาโดยไม่แจ้งล่วงหน้า</li>
         <li>ห้ามบันทึก คัดลอก ทำซ้ำ หรือเผยแพร่เนื้อหาในเชิงพาณิชย์</li>
       </ul>
 
-      <h2 class="text-xl font-bold mt-8 mb-3">4. NSV Coin และการชำระเงิน</h2>
+      <h2 class="text-xl font-bold mt-8 mb-3">4. MKW Coin และการชำระเงิน</h2>
       <ul class="list-disc list-inside space-y-1 text-sm text-zinc-300">
-        <li>1 บาท = 1 NSV Coin (ใช้ปลดล็อกตอนละ 50 coin หรือซื้อ VIP)</li>
+        <li>1 บาท = 1 MKW Coin (ใช้ปลดล็อกตอนละ 1 coin หรือซื้อ VIP)</li>
         <li>ชำระเงินผ่านการโอนและอัพโหลดสลิปให้ admin ตรวจสอบก่อนเติมเหรียญ</li>
         <li>เหรียญที่ซื้อแล้วไม่สามารถขอคืนเงินได้ ยกเว้นกรณีที่ระบบมีข้อผิดพลาด</li>
         <li>เหรียญและสมาชิก VIP ใช้ได้เฉพาะในเว็บไซต์นี้ ห้ามโอนหรือขายต่อ</li>
@@ -3040,7 +3276,7 @@ async function initTermsPage() {
         <li>ใช้บริการเพื่อกระทำผิดกฎหมายหรือละเมิดสิทธิของผู้อื่น</li>
         <li>ใช้ bot, scraper, หรือเครื่องมืออัตโนมัติเพื่อโกงระบบ</li>
         <li>สร้างบัญชีปลอม ใช้บัญชีของผู้อื่น หรือแชร์บัญชีกับบุคคลที่สาม</li>
-        <li>ขายต่อบัญชี เหรียญ NSV หรือสมาชิก VIP</li>
+        <li>ขายต่อบัญชี เหรียญ MKW หรือสมาชิก VIP</li>
         <li>ละเมิดลิขสิทธิ์ หรือเผยแพร่เนื้อหาผิดศีลธรรม</li>
       </ul>
 

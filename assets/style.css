@@ -23,6 +23,10 @@ body{font-family:'Sarabun','Segoe UI',system-ui,sans-serif;background:#0a0a0f;co
 .slide-up{animation:slide .35s cubic-bezier(.16,1,.3,1)}
 @keyframes slide{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 
+@keyframes giftWobble{0%,100%{transform:rotate(-8deg) scale(1)}50%{transform:rotate(8deg) scale(1.05)}}
+@keyframes giftShake{0%,100%{transform:translateX(0) rotate(0)}25%{transform:translateX(-6px) rotate(-10deg)}75%{transform:translateX(6px) rotate(10deg)}}
+@keyframes giftBurst{0%{transform:scale(0.5);opacity:0.3}50%{transform:scale(1.5);opacity:1}100%{transform:scale(1);opacity:1}}
+
 .error-banner{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fca5a5}
 .warn-banner{background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);color:#fde68a}
 .info-banner{background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);color:#93c5fd}

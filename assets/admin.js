@@ -31,6 +31,7 @@ async function initAdminPage() {
       <button data-tab="messages"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📬 ส่งข้อความ</button>
       <button data-tab="usermsg"   class="tab-btn px-4 py-2 text-sm rounded-t-lg">📥 ข้อความจาก user</button>
       <button data-tab="site"      class="tab-btn px-4 py-2 text-sm rounded-t-lg">🌐 ระบบ</button>
+      <button data-tab="register"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📝 สมัครสมาชิก</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
     </div>
     <div id="tabContent"></div>
@@ -65,6 +66,7 @@ async function loadTab(tab) {
     if (tab === 'messages')  return renderMessagesTab(c);
     if (tab === 'usermsg')   return renderUserMessagesTab(c);
     if (tab === 'site')      return renderSiteTab(c);
+    if (tab === 'register')  return renderRegisterTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
@@ -256,7 +258,7 @@ async function renderUsersTab(c) {
       };
       let body = `
         <div class="grid grid-cols-3 gap-2 mb-4">
-          <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">เติมสะสม</div><div class="text-lg font-black text-amber-400">${totalCoin.toLocaleString()} NSV</div></div>
+          <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">เติมสะสม</div><div class="text-lg font-black text-amber-400">${totalCoin.toLocaleString()} MKW</div></div>
           <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">จ่ายจริง</div><div class="text-lg font-black text-zinc-200">฿${totalSpent.toLocaleString()}</div></div>
           <div class="bg-zinc-800/50 rounded p-2 text-center"><div class="text-[10px] text-zinc-500">VIP รวม</div><div class="text-lg font-black text-purple-300">${totalVipDays} วัน</div></div>
         </div>`;
@@ -555,7 +557,7 @@ async function renderGiftcardsTab(c) {
         <div class="flex gap-3 flex-wrap">
           <label class="flex items-center gap-2 cursor-pointer text-sm">
             <input type="radio" name="gType" value="coin" checked class="accent-amber-500"/>
-            <span class="text-amber-300 font-bold">💰 เหรียญ NSV</span>
+            <span class="text-amber-300 font-bold">💰 เหรียญ MKW</span>
           </label>
           <label class="flex items-center gap-2 cursor-pointer text-sm">
             <input type="radio" name="gType" value="vip" class="accent-purple-500"/>
@@ -1129,6 +1131,35 @@ async function renderMessagesTab(c) {
             <textarea id="msgBody" rows="6" maxlength="3000" placeholder="เขียนข้อความที่อยากส่ง..." class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm resize-none"></textarea>
             <div class="text-[10px] text-zinc-600 mt-1 text-right"><span id="msgLen">0</span>/3000</div>
           </div>
+          <div class="p-3 rounded-lg bg-amber-500/5 border border-amber-500/30">
+            <label class="flex items-center gap-2 cursor-pointer select-none mb-2">
+              <input id="msgGiftEnable" type="checkbox" class="w-4 h-4 accent-amber-500"/>
+              <span class="text-sm font-bold text-amber-300">🎁 แนบของขวัญ</span>
+              <span class="text-[10px] text-zinc-500">(user ต้องกดเปิดกล่องก่อน)</span>
+            </label>
+            <div id="msgGiftFields" class="grid grid-cols-2 gap-2 opacity-50 pointer-events-none">
+              <div>
+                <label class="text-[11px] text-zinc-400 mb-1 block">💰 MKW Coins</label>
+                <input id="msgGiftCoins" type="number" min="0" max="100000" value="0" class="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+                <div class="flex gap-1 mt-1">
+                  <button type="button" data-gift-coins="10" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">10</button>
+                  <button type="button" data-gift-coins="50" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">50</button>
+                  <button type="button" data-gift-coins="100" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">100</button>
+                  <button type="button" data-gift-coins="500" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">500</button>
+                </div>
+              </div>
+              <div>
+                <label class="text-[11px] text-zinc-400 mb-1 block">👑 VIP (วัน)</label>
+                <input id="msgGiftVipDays" type="number" min="0" max="365" value="0" class="w-full px-2 py-1.5 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+                <div class="flex gap-1 mt-1">
+                  <button type="button" data-gift-vip="1" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">1</button>
+                  <button type="button" data-gift-vip="3" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">3</button>
+                  <button type="button" data-gift-vip="7" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">7</button>
+                  <button type="button" data-gift-vip="30" class="flex-1 text-[10px] px-1 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">30</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div id="msgStatus" class="text-sm hidden"></div>
           <div class="flex gap-2">
             <button type="submit" class="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded font-bold">📤 ส่งข้อความ</button>
@@ -1151,9 +1182,21 @@ async function renderMessagesTab(c) {
   const len = $('#msgLen');
   body.oninput = () => { len.textContent = body.value.length; };
 
+  const giftEnable = $('#msgGiftEnable');
+  const giftFields = $('#msgGiftFields');
+  const giftCoinsEl = $('#msgGiftCoins');
+  const giftVipEl = $('#msgGiftVipDays');
+  giftEnable.onchange = () => {
+    if (giftEnable.checked) giftFields.classList.remove('opacity-50', 'pointer-events-none');
+    else giftFields.classList.add('opacity-50', 'pointer-events-none');
+  };
+  $$('[data-gift-coins]').forEach(b => b.onclick = () => { giftCoinsEl.value = b.dataset.giftCoins; });
+  $$('[data-gift-vip]').forEach(b => b.onclick = () => { giftVipEl.value = b.dataset.giftVip; });
+
   $('#msgReset').onclick = () => {
     $('#msgForm').reset();
     len.textContent = '0';
+    giftFields.classList.add('opacity-50', 'pointer-events-none');
   };
 
   $('#msgForm').onsubmit = async e => {
@@ -1168,13 +1211,24 @@ async function renderMessagesTab(c) {
       status.classList.add('text-red-400');
       return;
     }
-    if (to === '*' && !confirm(`ส่งข้อความถึง user ทั้งหมด ${users.length} คน?`)) return;
+    const giftOn = giftEnable.checked;
+    const coins = giftOn ? Math.max(0, parseInt(giftCoinsEl.value, 10) || 0) : 0;
+    const vipDays = giftOn ? Math.max(0, parseInt(giftVipEl.value, 10) || 0) : 0;
+    if (giftOn && coins === 0 && vipDays === 0) {
+      status.textContent = 'ของขวัญต้องมี coins หรือ VIP อย่างน้อยหนึ่งอย่าง';
+      status.classList.add('text-red-400');
+      return;
+    }
+    if (to === '*' && !confirm(`ส่งข้อความถึง user ทั้งหมด ${users.length} คน${giftOn ? ` พร้อมของขวัญ (💰${coins} + 👑${vipDays}d)` : ''}?`)) return;
     try {
-      const r = await backendPost('/api/admin/send-message', { to, subject, body: bodyText });
-      status.textContent = `✓ ส่งสำเร็จ — ถึง ${r.sentTo} ${r.broadcast ? 'คน (broadcast)' : 'คน'}`;
+      const payload = { to, subject, body: bodyText };
+      if (giftOn) { payload.coins = coins; payload.vipDays = vipDays; }
+      const r = await backendPost('/api/admin/send-message', payload);
+      status.textContent = `✓ ส่งสำเร็จ — ถึง ${r.sentTo} ${r.broadcast ? 'คน (broadcast)' : 'คน'}${giftOn ? ' พร้อมของขวัญ 🎁' : ''}`;
       status.classList.add('text-emerald-400');
       $('#msgForm').reset();
       len.textContent = '0';
+      giftFields.classList.add('opacity-50', 'pointer-events-none');
     } catch (ex) {
       status.textContent = ex.message;
       status.classList.add('text-red-400');
@@ -1247,4 +1301,155 @@ async function renderUserMessagesTab(c) {
     try { await backendDelete('/api/admin/user-messages'); renderUserMessagesTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   };
+}
+
+// ---------- Register / IP control ----------
+async function renderRegisterTab(c) {
+  const [wg, rs] = await Promise.all([
+    backendGet('/api/admin/welcome-gift'),
+    backendGet('/api/admin/register-settings'),
+  ]);
+  const gift = wg.welcomeGift || { enabled: false, coins: 0, vipDays: 0, message: '' };
+  const settings = rs.registerSettings || { maxPerIp: 3, banHours: 24 };
+  const ipLog = rs.registerIpLog || {};
+  const banned = rs.bannedIps || {};
+  const fmt = ts => {
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleString('th-TH');
+  };
+  const bannedEntries = Object.entries(banned).sort((a, b) => (b[1].until || 0) - (a[1].until || 0));
+  const logEntries = Object.entries(ipLog).sort((a, b) => (b[1].firstAt || 0) - (a[1].firstAt || 0)).slice(0, 50);
+
+  c.innerHTML = `
+    <div class="max-w-3xl space-y-4">
+      <!-- Welcome gift -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">🎁 ของขวัญต้อนรับสมาชิกใหม่</h3>
+        <p class="text-xs text-zinc-500 mb-4">ส่งอัตโนมัติเข้า inbox ของ user เมื่อสมัครใหม่ (user ต้องกดเปิดกล่องเอง)</p>
+        <form id="wgForm" class="space-y-3">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input id="wgEnabled" type="checkbox" class="w-4 h-4 accent-amber-500" ${gift.enabled ? 'checked' : ''}/>
+            <span class="text-sm font-bold">เปิดใช้งาน</span>
+          </label>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">💰 MKW Coins</label>
+              <input id="wgCoins" type="number" min="0" max="100000" value="${gift.coins || 0}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">👑 VIP (วัน)</label>
+              <input id="wgVipDays" type="number" min="0" max="365" value="${gift.vipDays || 0}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400 mb-1 block">ข้อความต้อนรับ</label>
+            <textarea id="wgMsg" rows="3" maxlength="1000" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm resize-none">${escapeHtml(gift.message || 'ยินดีต้อนรับสู่ MKW Movies!')}</textarea>
+          </div>
+          <div id="wgStatus" class="text-sm hidden"></div>
+          <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-sm font-bold">💾 บันทึก</button>
+        </form>
+      </div>
+
+      <!-- Register settings -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">🛡️ ตั้งค่าการสมัครสมาชิก</h3>
+        <p class="text-xs text-zinc-500 mb-4">จำกัดจำนวนการสมัครต่อ IP — หากเกินจะแบน IP ตามระยะเวลาที่ตั้งไว้</p>
+        <form id="rsForm" class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">สูงสุดต่อ IP (ภายใน 24 ชม.)</label>
+              <input id="rsMax" type="number" min="1" max="100" value="${settings.maxPerIp || 3}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">ระยะเวลาแบน (ชั่วโมง)</label>
+              <input id="rsBan" type="number" min="1" max="8760" value="${settings.banHours || 24}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+            </div>
+          </div>
+          <div id="rsStatus" class="text-sm hidden"></div>
+          <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-bold">💾 บันทึก</button>
+        </form>
+      </div>
+
+      <!-- Banned IPs -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">🚫 IP ที่ถูกแบน <span class="text-xs text-zinc-500 font-normal">(${bannedEntries.length})</span></h3>
+        ${bannedEntries.length ? `
+          <div class="space-y-2">
+            ${bannedEntries.map(([ip, info]) => `
+              <div class="flex items-center gap-2 p-2 bg-zinc-950 border border-red-500/30 rounded">
+                <div class="flex-1 min-w-0">
+                  <div class="font-mono text-sm">${escapeHtml(ip)}</div>
+                  <div class="text-[10px] text-zinc-500">เหตุผล: ${escapeHtml(info.reason || '—')} • ถึง: ${fmt(info.until)}</div>
+                </div>
+                <button data-unban="${escapeHtml(ip)}" class="text-[11px] px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 rounded">ปลดแบน</button>
+              </div>
+            `).join('')}
+          </div>
+        ` : `<div class="text-xs text-zinc-500 text-center py-4">ไม่มี IP ที่ถูกแบน</div>`}
+      </div>
+
+      <!-- IP log -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">📊 บันทึก IP สมัครล่าสุด <span class="text-xs text-zinc-500 font-normal">(${logEntries.length} IPs)</span></h3>
+        ${logEntries.length ? `
+          <div class="space-y-1 text-xs">
+            ${logEntries.map(([ip, info]) => {
+              const n = info.count || 0;
+              const over = n >= (settings.maxPerIp || 3);
+              return `<div class="flex items-center gap-2 px-2 py-1.5 ${over ? 'bg-red-500/10' : 'bg-zinc-950'} rounded">
+                <span class="font-mono flex-1 truncate">${escapeHtml(ip)}</span>
+                <span class="${over ? 'text-red-400 font-bold' : 'text-zinc-400'}">${n} ครั้ง</span>
+                <span class="text-zinc-600">${fmt(info.firstAt)}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        ` : `<div class="text-xs text-zinc-500 text-center py-4">ยังไม่มีบันทึก</div>`}
+      </div>
+    </div>
+  `;
+
+  $('#wgForm').onsubmit = async e => {
+    e.preventDefault();
+    const st = $('#wgStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    try {
+      await backendPost('/api/admin/welcome-gift', {
+        enabled: $('#wgEnabled').checked,
+        coins: Math.max(0, parseInt($('#wgCoins').value, 10) || 0),
+        vipDays: Math.max(0, parseInt($('#wgVipDays').value, 10) || 0),
+        message: $('#wgMsg').value.trim(),
+      });
+      st.textContent = '✓ บันทึกสำเร็จ';
+      st.classList.add('text-emerald-400');
+    } catch (ex) {
+      st.textContent = ex.message;
+      st.classList.add('text-red-400');
+    }
+  };
+
+  $('#rsForm').onsubmit = async e => {
+    e.preventDefault();
+    const st = $('#rsStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    try {
+      await backendPost('/api/admin/register-settings', {
+        maxPerIp: Math.max(1, parseInt($('#rsMax').value, 10) || 3),
+        banHours: Math.max(1, parseInt($('#rsBan').value, 10) || 24),
+      });
+      st.textContent = '✓ บันทึกสำเร็จ';
+      st.classList.add('text-emerald-400');
+    } catch (ex) {
+      st.textContent = ex.message;
+      st.classList.add('text-red-400');
+    }
+  };
+
+  $$('[data-unban]').forEach(b => b.onclick = async () => {
+    const ip = b.dataset.unban;
+    if (!confirm(`ปลดแบน IP ${ip}?`)) return;
+    try {
+      await backendDelete(`/api/admin/banned-ips/${encodeURIComponent(ip)}`);
+      renderRegisterTab(c);
+    } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
+  });
 }

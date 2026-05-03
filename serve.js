@@ -18,7 +18,7 @@ if (!SERIESJEEN_TOKEN) {
   console.warn('⚠️  SERIESJEEN_TOKEN env ไม่ได้ตั้ง — /proxy/* จะไม่ทำงาน');
 }
 
-const EPISODE_COST = 50;  // NSV Coin per locked episode
+const EPISODE_COST = 1;  // MKW Coin per locked episode
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -71,6 +71,10 @@ const DEFAULT_DATA = {
   disableTracking: false,                                      // ปิดการบันทึก lastSeenAt/loginLog ชั่วคราว (ลดภาระ disk write)
   hiddenBooks: {},                                            // bookId → { hiddenBy, hiddenAt, reason, bookName }
   loginLog: [],                                               // [{ username, loginAt, logoutAt, durationMs }] max 1000
+  welcomeGift: { enabled: false, coins: 0, vipDays: 0, message: 'ยินดีต้อนรับสู่ MKW Movies!' },
+  registerSettings: { maxPerIp: 3, banHours: 24 },             // จำกัดสมัครต่อ IP
+  registerIpLog: {},                                          // ip → { count, firstAt }
+  bannedIps: {},                                              // ip → { until, reason }
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -232,6 +236,8 @@ function closeSession(data, token, reason) {
 
 function publicUser(u) {
   if (!u) return null;
+  const today = getBangkokDate();
+  const pd = u.pointsDaily || { date: '', earned: 0 };
   return {
     username: u.username,
     role: u.role,
@@ -239,7 +245,49 @@ function publicUser(u) {
     unlocked: u.unlocked || [],
     created: u.created,
     vipExpires: u.vipExpires || null,
+    points: u.points || 0,
+    pointsToday: pd.date === today ? (pd.earned || 0) : 0,
+    pointsDailyCap: 10000,
   };
+}
+
+function getBangkokDate() {
+  const d = new Date(Date.now() + 7 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+// ---------- IP ban / register throttle ----------
+function isIpBanned(data, ip) {
+  const b = data.bannedIps?.[ip];
+  if (!b) return null;
+  if (Date.now() >= new Date(b.until).getTime()) {
+    delete data.bannedIps[ip];
+    return null;
+  }
+  return b;
+}
+// Register ครั้งที่ N — คืน { ok, warning?, banned? }
+function recordRegisterIp(data, ip) {
+  const settings = data.registerSettings || { maxPerIp: 3, banHours: 24 };
+  const max = Math.max(1, parseInt(settings.maxPerIp, 10) || 3);
+  const windowMs = Math.max(1, parseInt(settings.banHours, 10) || 24) * 3600 * 1000;
+  data.registerIpLog = data.registerIpLog || {};
+  const now = Date.now();
+  let rec = data.registerIpLog[ip];
+  if (rec && (now - new Date(rec.firstAt).getTime() > windowMs)) rec = null;  // หมดอายุ window → reset
+  if (!rec) rec = { count: 0, firstAt: new Date(now).toISOString() };
+  rec.count++;
+  data.registerIpLog[ip] = rec;
+  if (rec.count > max) {
+    data.bannedIps = data.bannedIps || {};
+    data.bannedIps[ip] = {
+      until: new Date(now + windowMs).toISOString(),
+      reason: `สมัครสมาชิกเกินกำหนด (${rec.count}/${max}) — ทำผิดกฎของเว็บไซต์`,
+    };
+    return { ok: false, banned: true, until: data.bannedIps[ip].until };
+  }
+  if (rec.count === max) return { ok: true, warning: `IP นี้สมัครได้อีก 0 ครั้งใน ${settings.banHours} ชั่วโมงข้างหน้า — หากสมัครเพิ่มจะถูกระงับ IP` };
+  return { ok: true };
 }
 
 function randomToken() {
@@ -320,6 +368,7 @@ function sendInbox(data, username, msg) {
     at: new Date().toISOString(),
     read: false,
   };
+  if (msg.gift) m.gift = msg.gift;
   u.inbox.unshift(m);
   if (u.inbox.length > 100) u.inbox = u.inbox.slice(0, 100);
   return m;
@@ -330,6 +379,22 @@ function sendInboxBroadcast(data, msg) {
     if (sendInbox(data, username, msg)) count++;
   }
   return count;
+}
+
+// ---------- Welcome gift ----------
+function deliverWelcomeGift(data, username) {
+  const wg = data.welcomeGift || {};
+  if (!wg.enabled) return null;
+  const coins = Math.max(0, parseInt(wg.coins, 10) || 0);
+  const vipDays = Math.max(0, parseInt(wg.vipDays, 10) || 0);
+  if (coins === 0 && vipDays === 0) return null;
+  const type = coins > 0 && vipDays > 0 ? 'both' : (vipDays > 0 ? 'vip' : 'coin');
+  return sendInbox(data, username, {
+    from: 'system',
+    subject: '🎁 ของขวัญต้อนรับสมาชิกใหม่',
+    body: wg.message || 'ยินดีต้อนรับสู่ MKW Movies!',
+    gift: { type, coins, vipDays, claimed: false, claimedAt: null },
+  });
 }
 
 // ---------- Static ----------
@@ -456,6 +521,14 @@ function checkAccess(data, user, bookId, index) {
 async function handleApi(req, res, pathname, query) {
   const data = await readData();
   const user = await getAuthUser(req, data);
+  const ip = clientIp(req);
+
+  // IP ban — ปิดเว็บทั้งหมด ยกเว้น admin (login ผ่าน session เดิมได้)
+  const ban = isIpBanned(data, ip);
+  if (ban && user?.role !== 'admin') {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'ip_banned', message: 'ทำผิดกฎของเว็บไซต์ — IP นี้ถูกระงับ', until: ban.until, reason: ban.reason || '' }));
+  }
 
   // ===== Public config (no auth) =====
   if (req.method === 'GET' && pathname === '/api/public-config') {
@@ -496,11 +569,19 @@ async function handleApi(req, res, pathname, query) {
     if (password.length < 3) return badRequest(res, 'password สั้นเกินไป');
     if (data.users[username]) return badRequest(res, 'username นี้ถูกใช้แล้ว');
     data.users[username] = { password, role: 'user', coins: 0, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10) };
+    const ipTrack = recordRegisterIp(data, ip);
+    if (!ipTrack.ok && ipTrack.banned) {
+      delete data.users[username];
+      await writeData(data);
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ error: 'ip_banned', message: 'ทำผิดกฎของเว็บไซต์ — IP นี้ถูกระงับจากการสมัครเกินกำหนด', until: ipTrack.until }));
+    }
+    deliverWelcomeGift(data, username);
     const token = randomToken();
     const nowIso = new Date().toISOString();
     data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
     await writeData(data);
-    return json(res, 200, { token, user: publicUser({ username, ...data.users[username] }) });
+    return json(res, 200, { token, user: publicUser({ username, ...data.users[username] }), warning: ipTrack.warning || null });
   }
 
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -573,6 +654,14 @@ async function handleApi(req, res, pathname, query) {
           role: 'user', coins: 0, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10),
           googleEmail: profile.email, googleName: profile.name || '',
         };
+        const ipTrack = recordRegisterIp(data, ip);
+        if (!ipTrack.ok && ipTrack.banned) {
+          delete data.users[username];
+          await writeData(data);
+          res.writeHead(403);
+          return res.end('ทำผิดกฎของเว็บไซต์ — IP นี้ถูกระงับจากการสมัครเกินกำหนด');
+        }
+        deliverWelcomeGift(data, username);
       } else if (data.loginDisabled && data.users[username].role !== 'admin') {
         res.writeHead(403); return res.end('ระบบ login ปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง'));
       }
@@ -610,6 +699,43 @@ async function handleApi(req, res, pathname, query) {
     }
     await writeData(data);
     return json(res, 200, { ok: true });
+  }
+
+  // ===== Online Points (เก็บพ้อยจากการดูวิดีโอ: 1 นาที = 10 พ้อย, วันละ 10000) =====
+  if (req.method === 'POST' && pathname === '/api/user/points/tick') {
+    if (!user) return unauthorized(res);
+    const body = await readBody(req);
+    const seconds = Math.max(0, Math.min(600, parseInt(body.seconds || 0, 10) || 0));
+    const today = getBangkokDate();
+    const u = data.users[user.username];
+    u.points = u.points || 0;
+    if (!u.pointsDaily || u.pointsDaily.date !== today) u.pointsDaily = { date: today, earned: 0 };
+    const cap = 10000;
+    const minutes = Math.floor(seconds / 60);
+    const want = minutes * 10;
+    const room = Math.max(0, cap - u.pointsDaily.earned);
+    const give = Math.min(room, want);
+    if (give > 0) {
+      u.points += give;
+      u.pointsDaily.earned += give;
+      await writeData(data);
+    }
+    return json(res, 200, { points: u.points, pointsToday: u.pointsDaily.earned, cap, added: give });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/user/redeem-points') {
+    if (!user) return unauthorized(res);
+    const body = await readBody(req);
+    const want = parseInt(body.points || 0, 10) || 0;
+    const u = data.users[user.username];
+    u.points = u.points || 0;
+    const usable = Math.floor(Math.min(u.points, want) / 100) * 100;
+    if (usable < 100) return badRequest(res, 'ต้องแลกอย่างน้อย 100 Point (มี ' + u.points + ' Point)');
+    const coinsAdded = usable / 100;
+    u.points -= usable;
+    u.coins = (u.coins || 0) + coinsAdded;
+    await writeData(data);
+    return json(res, 200, { ok: true, points: u.points, coinsAdded, newBalance: u.coins });
   }
 
   // ===== Access & Unlock =====
@@ -753,7 +879,7 @@ async function handleApi(req, res, pathname, query) {
     sendInbox(data, user.username, {
       from: 'system',
       subject: `🎉 ซื้อ VIP ${pkg.days} วัน สำเร็จ`,
-      body: `คุณได้ซื้อแพ็กเกจ "${pkg.label || pkg.id}" (${pkg.days} วัน)\nใช้เหรียญ: ${pkg.coins} NSV\nVIP หมดอายุ: ${new Date(u.vipExpires).toLocaleString('th-TH')}\n\nขอบคุณที่สนับสนุน ${process.env.APP_NAME || 'MKW Movies'}`,
+      body: `คุณได้ซื้อแพ็กเกจ "${pkg.label || pkg.id}" (${pkg.days} วัน)\nใช้เหรียญ: ${pkg.coins} MKW\nVIP หมดอายุ: ${new Date(u.vipExpires).toLocaleString('th-TH')}\n\nขอบคุณที่สนับสนุน ${process.env.APP_NAME || 'MKW Movies'}`,
     });
     await writeData(data);
     return json(res, 200, { ok: true, role: u.role, vipExpires: u.vipExpires, coins: u.coins, daysAdded: pkg.days });
@@ -1276,8 +1402,8 @@ async function handleApi(req, res, pathname, query) {
     data.topupHistory.push({ username: slip.username, packageId: 'slip:' + slip.id, coins: slip.amount, pricePaid: slip.amount, discount: null, at: slip.approvedAt });
     sendInbox(data, slip.username, {
       from: 'admin',
-      subject: `✅ สลิปได้รับการอนุมัติ +${slip.amount} NSV`,
-      body: `สลิปเลขที่ ${slip.id} ของคุณได้รับการอนุมัติแล้ว\nจำนวน: +${slip.amount} NSV Coin\nยอดเหรียญปัจจุบัน: ${u.coins} NSV\n\nขอบคุณที่ใช้บริการ`,
+      subject: `✅ สลิปได้รับการอนุมัติ +${slip.amount} MKW`,
+      body: `สลิปเลขที่ ${slip.id} ของคุณได้รับการอนุมัติแล้ว\nจำนวน: +${slip.amount} MKW Coin\nยอดเหรียญปัจจุบัน: ${u.coins} MKW\n\nขอบคุณที่ใช้บริการ`,
     });
     await writeData(data);
     return json(res, 200, { ok: true, coinsAdded: slip.amount, newBalance: u.coins });
@@ -1295,8 +1421,8 @@ async function handleApi(req, res, pathname, query) {
     slip.image = '';  // เคลียร์ภาพหลัง reject — เก็บ metadata ไว้ดู audit
     sendInbox(data, slip.username, {
       from: 'admin',
-      subject: `❌ สลิปถูกปฏิเสธ (${slip.amount} NSV)`,
-      body: `สลิปเลขที่ ${slip.id} ของคุณถูกปฏิเสธ\nจำนวนที่แจ้ง: ${slip.amount} NSV\n${slip.rejectReason ? 'เหตุผล: ' + slip.rejectReason : 'โปรดติดต่อ admin หากมีข้อสงสัย'}\n\nหากต้องการเติมเงินอีกครั้ง กรุณาอัพโหลดสลิปใหม่`,
+      subject: `❌ สลิปถูกปฏิเสธ (${slip.amount} MKW)`,
+      body: `สลิปเลขที่ ${slip.id} ของคุณถูกปฏิเสธ\nจำนวนที่แจ้ง: ${slip.amount} MKW\n${slip.rejectReason ? 'เหตุผล: ' + slip.rejectReason : 'โปรดติดต่อ admin หากมีข้อสงสัย'}\n\nหากต้องการเติมเงินอีกครั้ง กรุณาอัพโหลดสลิปใหม่`,
     });
     await writeData(data);
     return json(res, 200, { ok: true });
@@ -1394,18 +1520,24 @@ async function handleApi(req, res, pathname, query) {
     const to = String(body.to || '').trim();  // username หรือ '*' = broadcast
     const subject = String(body.subject || '').trim();
     const text = String(body.body || '').trim();
+    const coins = Math.max(0, parseInt(body.coins, 10) || 0);
+    const vipDays = Math.max(0, parseInt(body.vipDays, 10) || 0);
     if (!to) return badRequest(res, 'ต้องระบุ to (username หรือ "*" เพื่อส่งทุกคน)');
-    if (!subject && !text) return badRequest(res, 'ต้องมี subject หรือ body อย่างน้อยหนึ่งอย่าง');
+    if (!subject && !text && coins === 0 && vipDays === 0) return badRequest(res, 'ต้องมี subject/body หรือ coins/vipDays อย่างน้อยหนึ่งอย่าง');
     const msg = { from: user.username, subject, body: text };
+    if (coins > 0 || vipDays > 0) {
+      const type = coins > 0 && vipDays > 0 ? 'both' : (vipDays > 0 ? 'vip' : 'coin');
+      msg.gift = { type, coins, vipDays, claimed: false, claimedAt: null };
+    }
     if (to === '*') {
       const count = sendInboxBroadcast(data, msg);
       await writeData(data);
-      return json(res, 200, { ok: true, sentTo: count, broadcast: true });
+      return json(res, 200, { ok: true, sentTo: count, broadcast: true, gift: !!msg.gift });
     }
     if (!data.users[to]) return notFound(res, 'ไม่พบ user: ' + to);
     sendInbox(data, to, msg);
     await writeData(data);
-    return json(res, 200, { ok: true, sentTo: 1, broadcast: false });
+    return json(res, 200, { ok: true, sentTo: 1, broadcast: false, gift: !!msg.gift });
   }
 
   // ===== Admin: ข้อความจาก user (adminInbox) =====
@@ -1438,6 +1570,90 @@ async function handleApi(req, res, pathname, query) {
     const before = (data.adminInbox || []).length;
     data.adminInbox = (data.adminInbox || []).filter(m => m.id !== id);
     if (data.adminInbox.length === before) return notFound(res);
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  // ===== User: claim gift from inbox message =====
+  if (req.method === 'POST' && pathname === '/api/user/inbox/claim-gift') {
+    if (!user) return unauthorized(res);
+    const body = await readBody(req);
+    const id = String(body.messageId || '').trim();
+    if (!id) return badRequest(res, 'ต้องมี messageId');
+    const u = data.users[user.username];
+    const msg = (u.inbox || []).find(m => m.id === id);
+    if (!msg) return notFound(res, 'ไม่พบข้อความ');
+    if (!msg.gift) return badRequest(res, 'ข้อความนี้ไม่มีของขวัญ');
+    if (msg.gift.claimed) return badRequest(res, 'เปิดของขวัญนี้แล้ว');
+    const coins = Math.max(0, parseInt(msg.gift.coins, 10) || 0);
+    const vipDays = Math.max(0, parseInt(msg.gift.vipDays, 10) || 0);
+    if (coins > 0) u.coins = (u.coins || 0) + coins;
+    if (vipDays > 0) {
+      const now = Date.now();
+      const base = (u.role === 'vip' && u.vipExpires && u.vipExpires > now) ? u.vipExpires : now;
+      u.vipExpires = base + vipDays * 24 * 60 * 60 * 1000;
+      if (u.role !== 'admin') u.role = 'vip';
+    }
+    msg.gift.claimed = true;
+    msg.gift.claimedAt = new Date().toISOString();
+    msg.read = true;
+    await writeData(data);
+    return json(res, 200, {
+      ok: true,
+      coinsAdded: coins,
+      vipDaysAdded: vipDays,
+      role: u.role,
+      coins: u.coins,
+      vipExpires: u.vipExpires || null,
+    });
+  }
+
+  // ===== Admin: Welcome gift config =====
+  if (pathname === '/api/admin/welcome-gift' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { welcomeGift: data.welcomeGift || { enabled: false, coins: 0, vipDays: 0, message: '' } });
+  }
+  if (pathname === '/api/admin/welcome-gift' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    data.welcomeGift = {
+      enabled: !!body.enabled,
+      coins: Math.max(0, parseInt(body.coins, 10) || 0),
+      vipDays: Math.max(0, parseInt(body.vipDays, 10) || 0),
+      message: String(body.message || '').slice(0, 1000),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, welcomeGift: data.welcomeGift });
+  }
+
+  // ===== Admin: Register settings (IP limit + ban duration) =====
+  if (pathname === '/api/admin/register-settings' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, {
+      registerSettings: data.registerSettings || { maxPerIp: 3, banHours: 24 },
+      registerIpLog: data.registerIpLog || {},
+      bannedIps: data.bannedIps || {},
+    });
+  }
+  if (pathname === '/api/admin/register-settings' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const max = Math.max(1, Math.min(999, parseInt(body.maxPerIp, 10) || 3));
+    const hours = Math.max(1, Math.min(24 * 30, parseInt(body.banHours, 10) || 24));
+    data.registerSettings = { maxPerIp: max, banHours: hours };
+    await writeData(data);
+    return json(res, 200, { ok: true, registerSettings: data.registerSettings });
+  }
+
+  // ===== Admin: ปลด ban IP =====
+  const mUnban = pathname.match(/^\/api\/admin\/banned-ips\/([^/]+)$/);
+  if (mUnban && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const ipKey = decodeURIComponent(mUnban[1]);
+    let removed = false;
+    if (data.bannedIps?.[ipKey]) { delete data.bannedIps[ipKey]; removed = true; }
+    if (data.registerIpLog?.[ipKey]) { delete data.registerIpLog[ipKey]; removed = true; }
+    if (!removed) return notFound(res);
     await writeData(data);
     return json(res, 200, { ok: true });
   }
