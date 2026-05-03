@@ -150,89 +150,81 @@ const SOURCE_ADAPTERS = {
       };
     },
   },
-  // ShortMax — 2-fetch pattern เหมือน DramaBox แต่ path style เป็น /detail/{id}, /alleps/{id}
+  // ShortMax — detail flat shape, /alleps wrap ใน {data:{episodes:[...]}}
+  // Episode: {episode, locked, video:{video_720, video_1080, video_480}}
   shortmax: {
     detailPath: id => `/detail/${encodeURIComponent(id)}`,
     episodesPath: id => `/alleps/${encodeURIComponent(id)}`,
     normalizeDetail: r => {
       if (!r) return null;
       return {
-        bookId: String(r.bookId || r.id || ''),
-        bookName: r.bookName || r.title || '(ไม่ทราบชื่อ)',
-        coverWap: r.coverWap || r.cover || '',
-        cover: r.cover || r.coverWap || '',
-        chapterCount: r.chapterCount || (typeof r.episodes === 'number' ? r.episodes : 0) || 0,
-        introduction: r.introduction || r.intro || '',
-        tagV3s: r.tagV3s || [],
-        playCount: r.playCount || '',
-        shelfTime: r.shelfTime || '',
-        corner: r.corner || null,
+        bookId: String(r.id || r.bookId || ''),
+        bookName: r.title || r.bookName || '(ไม่ทราบชื่อ)',
+        coverWap: r.cover || r.coverWap || '',
+        cover: r.cover || '',
+        chapterCount: typeof r.episodes === 'number' ? r.episodes : (r.chapterCount || 0),
+        introduction: r.summary || r.introduction || r.intro || '',
+        tagV3s: Array.isArray(r.tags) ? r.tags.map(t => ({ tagName: String(t) })) : [],
+        playCount: '',
+        shelfTime: '',
+        corner: null,
       };
     },
     normalizeEpisodes: r => {
-      if (Array.isArray(r)) return r;
-      if (Array.isArray(r?.episodes)) return r.episodes;
-      // Fallback ถ้า response เป็น Melolo-style videos array
-      if (Array.isArray(r?.videos)) {
-        return r.videos.map(v => ({
-          chapterIndex: Number(v.chapterIndex || v.episode || v.ep || 0),
-          isCharge: !!v.isCharge,
-          videoUrl: v.videoUrl || '',
-          '1080p': v['1080p'] || '',
-          '540p': v['540p'] || '',
-        }));
-      }
-      return [];
+      const eps = Array.isArray(r?.data?.episodes) ? r.data.episodes
+                : Array.isArray(r?.episodes) ? r.episodes
+                : Array.isArray(r) ? r : [];
+      return eps.map(e => {
+        const v = e.video || {};
+        return {
+          chapterIndex: Number(e.episode || e.chapterIndex || 0),
+          isCharge: !!e.locked,
+          videoUrl: v.video_1080 || v.video_720 || v.video_480 || e.videoUrl || '',
+          '1080p': v.video_1080 || '',
+          '720p': v.video_720 || '',
+          '540p': v.video_480 || '',
+        };
+      }).sort((a, b) => a.chapterIndex - b.chapterIndex);
     },
     extractEpisodesFromDetail: () => null,
-    fetchVideoUrl: null,  // คาดว่า /alleps คืน URL พร้อมใน response
+    fetchVideoUrl: null,
   },
-  // DramaWave — single-fetch + lazy URL pattern เหมือน Melolo
+  // DramaWave — /drama/{id} wrap ใน {code, data:{cover, episode_count, items:[...]}}
+  // ไม่มี title ระดับ series → ใช้ items[0].name แทน. URL อยู่ใน item ครบทุกตอนแล้ว ไม่ต้อง /video
   dramawave: {
     detailPath: id => `/drama/${encodeURIComponent(id)}`,
-    episodesPath: null,
+    episodesPath: null,  // extract จาก detail
     normalizeDetail: r => {
       if (!r) return null;
+      const d = r.data || r;
+      const items = Array.isArray(d.items) ? d.items : [];
       return {
-        bookId: String(r.bookId || r.id || ''),
-        bookName: r.bookName || r.title || '(ไม่ทราบชื่อ)',
-        coverWap: r.coverWap || r.cover || '',
-        cover: r.cover || r.coverWap || '',
-        chapterCount: typeof r.episodes === 'number' ? r.episodes : (r.chapterCount || (Array.isArray(r.videos) ? r.videos.length : 0)) || 0,
-        introduction: r.introduction || r.intro || '',
-        tagV3s: r.tagV3s || [],
-        playCount: r.playCount || '',
-        shelfTime: r.shelfTime || '',
-        corner: r.corner || null,
+        bookId: String(d.bookId || d.id || d.series_id || ''),
+        bookName: items[0]?.name || d.title || d.bookName || '(ไม่ทราบชื่อ)',
+        coverWap: d.cover || items[0]?.cover || '',
+        cover: d.cover || '',
+        chapterCount: d.episode_count || d.chapterCount || items.length || 0,
+        introduction: d.description || d.summary || d.introduction || '',
+        tagV3s: [],
+        playCount: '',
+        shelfTime: '',
+        corner: null,
       };
     },
     normalizeEpisodes: () => [],
     extractEpisodesFromDetail: r => {
-      const videos = Array.isArray(r?.videos) ? r.videos : [];
-      return videos.map(v => ({
-        chapterIndex: Number(v.episode || v.ep || v.chapterIndex || 0),
-        isCharge: !!v.isCharge,
-        videoUrl: '',
-        '1080p': '',
-        '540p': '',
-        _vid: v.vid,
-        _duration: v.duration,
-      })).sort((a, b) => a.chapterIndex - b.chapterIndex);
+      const d = r?.data || r || {};
+      const items = Array.isArray(d.items) ? d.items : [];
+      return items.map(e => ({
+        chapterIndex: Number(e.serial_number || e.episode || e.chapterIndex || 0),
+        isCharge: e.video_type === 'charge',
+        videoUrl: e['1080p_mp4'] || e['720p_mp4'] || e['540p_mp4'] || e.m3u8_path || '',
+        '1080p': e['1080p_mp4'] || '',
+        '720p': e['720p_mp4'] || '',
+        '540p': e['540p_mp4'] || '',
+      })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
     },
-    fetchVideoUrl: async (bookId, ep) => {
-      const v = await apiGet(`/video?id=${encodeURIComponent(bookId)}&ep=${ep}`, 'dramawave');
-      const list = Array.isArray(v.qualityList) ? v.qualityList : [];
-      const q1080 = list.find(x => x.label === '1080p')?.url || '';
-      const q720 = list.find(x => x.label === '720p')?.url || '';
-      const q540 = list.find(x => x.label === '540p')?.url || '';
-      return {
-        videoUrl: v.videoUrl || q1080 || q720 || q540 || '',
-        '1080p': q1080,
-        '720p': q720,
-        '540p': q540,
-        locked: !!v.locked,
-      };
-    },
+    fetchVideoUrl: null,  // URL ฝังใน detail response แล้ว
   },
 };
 function getAdapter(source) {
@@ -508,9 +500,11 @@ function maintenanceGate() {
   return true;
 }
 
-// ---------- Heartbeat (อัปเดต lastSeenAt ทุก 60 วิ) ----------
+// ---------- Heartbeat (อัปเดต lastSeenAt ทุก 60 วิ + poll inbox unread) ----------
 let _heartbeatTimer = null;
 function startHeartbeat() {
+  // Initial inbox fetch — ทำทันทีถ้า login อยู่
+  if (auth.token) refreshInboxBadge();
   if (_heartbeatTimer || !auth.token) return;
   // ถ้า admin ปิด tracking → ข้าม heartbeat ทั้งหมด (ลดภาระ server)
   if (publicConfig.data?.trackingDisabled) return;
@@ -518,7 +512,167 @@ function startHeartbeat() {
     if (!auth.token) return;
     if (publicConfig.data?.trackingDisabled) return;  // respect toggle ระหว่าง session
     fetch('/api/auth/heartbeat', { method: 'POST', headers: auth.headers() }).catch(() => {});
+    refreshInboxBadge();
   }, 60_000);
+}
+
+// ---------- Inbox (กล่องจดหมาย) ----------
+const inbox = {
+  unread: 0,
+  messages: null,  // lazy load ตอนเปิด modal
+};
+async function refreshInboxBadge() {
+  if (!auth.token) return;
+  try {
+    const r = await fetch('/api/user/inbox/unread', { headers: auth.headers() });
+    if (!r.ok) return;
+    const d = await r.json();
+    inbox.unread = Number(d.unread || 0);
+    updateInboxBadgeDom();
+  } catch {}
+}
+function updateInboxBadgeDom() {
+  const badge = document.getElementById('inboxBadge');
+  if (!badge) return;
+  if (inbox.unread > 0) {
+    badge.textContent = inbox.unread > 99 ? '99+' : String(inbox.unread);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+async function openInboxModal() {
+  if (document.getElementById('inboxModal')) return;  // already open
+  const overlay = document.createElement('div');
+  overlay.id = 'inboxModal';
+  overlay.className = 'fixed inset-0 z-[100] flex items-start justify-center p-2 sm:p-4 pt-12 sm:pt-20';
+  overlay.style.background = 'rgba(0,0,0,0.75)';
+  overlay.style.backdropFilter = 'blur(4px)';
+  overlay.innerHTML = `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+      <div class="flex items-center justify-between p-4 border-b border-zinc-800">
+        <div>
+          <h3 class="font-black text-lg">📬 กล่องจดหมาย</h3>
+          <div id="inboxCount" class="text-xs text-zinc-500 mt-0.5">กำลังโหลด...</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="inboxReadAll" class="text-xs px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 rounded">อ่านทั้งหมด</button>
+          <button id="inboxClose" class="w-8 h-8 flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 rounded-full text-zinc-300">✕</button>
+        </div>
+      </div>
+      <div id="inboxList" class="flex-1 overflow-y-auto p-3 space-y-2">
+        <div class="text-center text-zinc-500 py-10">กำลังโหลด...</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if (e.target === overlay) closeInboxModal(); };
+  document.getElementById('inboxClose').onclick = closeInboxModal;
+  document.getElementById('inboxReadAll').onclick = async () => {
+    try {
+      await backendPost('/api/user/inbox/read-all', {});
+      (inbox.messages || []).forEach(m => { m.read = true; });
+      inbox.unread = 0;
+      updateInboxBadgeDom();
+      renderInboxList();
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  };
+  try {
+    const d = await backendGet('/api/user/inbox');
+    inbox.messages = Array.isArray(d.messages) ? d.messages : [];
+    inbox.unread = Number(d.unread || 0);
+    updateInboxBadgeDom();
+    renderInboxList();
+  } catch (e) {
+    document.getElementById('inboxList').innerHTML = errorBanner(e, { title: 'โหลดจดหมายไม่สำเร็จ' });
+  }
+}
+function closeInboxModal() {
+  document.getElementById('inboxModal')?.remove();
+}
+function renderInboxList() {
+  const listEl = document.getElementById('inboxList');
+  const countEl = document.getElementById('inboxCount');
+  if (!listEl || !countEl) return;
+  const msgs = inbox.messages || [];
+  countEl.textContent = `ทั้งหมด ${msgs.length} ฉบับ • ยังไม่อ่าน ${msgs.filter(m => !m.read).length} ฉบับ`;
+  if (!msgs.length) {
+    listEl.innerHTML = `<div class="text-center py-16 text-zinc-500"><div class="text-5xl mb-3">📭</div><p>ยังไม่มีจดหมาย</p></div>`;
+    return;
+  }
+  listEl.innerHTML = msgs.map(m => {
+    const dt = new Date(m.at);
+    const dateStr = isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const unreadDot = m.read ? '' : '<span class="w-2 h-2 rounded-full bg-red-500 inline-block mr-2"></span>';
+    const fromColor = m.from === 'admin' ? 'text-red-300' : (m.from === 'system' ? 'text-emerald-300' : 'text-zinc-400');
+    return `
+      <div data-id="${escapeHtml(m.id)}" class="msg-item group ${m.read ? 'bg-zinc-950/50' : 'bg-zinc-800/50 border-red-500/30'} border border-zinc-800 rounded-lg p-3 cursor-pointer hover:bg-zinc-800">
+        <div class="flex items-start gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 text-xs mb-1">
+              ${unreadDot}
+              <span class="font-bold ${fromColor}">${escapeHtml(m.from || 'system')}</span>
+              <span class="text-zinc-600">•</span>
+              <span class="text-zinc-500">${escapeHtml(dateStr)}</span>
+            </div>
+            <div class="font-bold text-sm text-zinc-100 truncate">${escapeHtml(m.subject || '(ไม่มีหัวข้อ)')}</div>
+            <div class="text-xs text-zinc-400 truncate mt-1">${escapeHtml(m.body || '')}</div>
+          </div>
+          <button data-del="${escapeHtml(m.id)}" class="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 text-xs text-zinc-500 hover:text-red-400" title="ลบ">🗑️</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  listEl.querySelectorAll('.msg-item').forEach(el => {
+    el.onclick = async e => {
+      const delBtn = e.target.closest('[data-del]');
+      if (delBtn) {
+        e.stopPropagation();
+        const id = delBtn.dataset.del;
+        if (!confirm('ลบจดหมายฉบับนี้?')) return;
+        try {
+          await backendDelete(`/api/user/inbox/${encodeURIComponent(id)}`);
+          inbox.messages = (inbox.messages || []).filter(m => m.id !== id);
+          inbox.unread = (inbox.messages || []).filter(m => !m.read).length;
+          updateInboxBadgeDom();
+          renderInboxList();
+        } catch (ex) { alert('ลบไม่สำเร็จ: ' + ex.message); }
+        return;
+      }
+      const id = el.dataset.id;
+      const m = (inbox.messages || []).find(x => x.id === id);
+      if (!m) return;
+      if (!m.read) {
+        backendPost(`/api/user/inbox/${encodeURIComponent(id)}/read`, {}).then(() => {
+          m.read = true;
+          inbox.unread = (inbox.messages || []).filter(x => !x.read).length;
+          updateInboxBadgeDom();
+        }).catch(() => {});
+      }
+      openMessageDetail(m);
+    };
+  });
+}
+function openMessageDetail(m) {
+  const dt = new Date(m.at);
+  const dateStr = isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH');
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 z-[110] flex items-center justify-center p-4';
+  overlay.style.background = 'rgba(0,0,0,0.7)';
+  overlay.innerHTML = `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full max-h-[80vh] flex flex-col shadow-2xl">
+      <div class="p-4 border-b border-zinc-800">
+        <div class="text-xs text-zinc-500 mb-1">จาก <span class="font-bold ${m.from === 'admin' ? 'text-red-300' : 'text-emerald-300'}">${escapeHtml(m.from || 'system')}</span> • ${escapeHtml(dateStr)}</div>
+        <h4 class="font-black text-lg">${escapeHtml(m.subject || '(ไม่มีหัวข้อ)')}</h4>
+      </div>
+      <div class="flex-1 overflow-y-auto p-4 text-sm text-zinc-200 whitespace-pre-line leading-relaxed">${escapeHtml(m.body || '(ไม่มีข้อความ)')}</div>
+      <div class="p-3 border-t border-zinc-800 text-right">
+        <button class="closeDetail px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-sm rounded">ปิด</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelector('.closeDetail').onclick = () => overlay.remove();
 }
 
 function pickList(res) {
@@ -607,6 +761,11 @@ function renderHeader(active) {
         </nav>
         <div class="flex-1"></div>
         <a href="/topup" class="text-xs px-2.5 sm:px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black rounded-lg font-bold whitespace-nowrap shrink-0">💰<span class="hidden sm:inline ml-1">เติมเงิน</span></a>
+        ${u ? `
+        <button id="inboxBtn" class="relative shrink-0 w-9 h-9 flex items-center justify-center bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-full transition-colors" aria-label="กล่องจดหมาย" title="กล่องจดหมาย">
+          <svg class="w-5 h-5 text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          <span id="inboxBadge" class="${inbox.unread > 0 ? '' : 'hidden'} absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-red-600 text-white text-[10px] font-black rounded-full flex items-center justify-center shadow">${inbox.unread > 99 ? '99+' : (inbox.unread || '')}</span>
+        </button>` : ''}
         <div class="relative shrink-0">${userButton}</div>
         <button id="burgerBtn" class="md:hidden p-1.5 text-zinc-300 shrink-0" aria-label="เมนู">
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
@@ -657,6 +816,11 @@ function attachSourceSwitcherEvents() {
 document.addEventListener('click', e => {
   const um = document.getElementById('userMenu');
   const mm = document.getElementById('mobileMenu');
+  if (e.target.closest('#inboxBtn')) {
+    e.stopPropagation();
+    openInboxModal();
+    return;
+  }
   if (e.target.closest('#userBtn')) {
     e.stopPropagation();
     um?.classList.toggle('hidden');
@@ -2469,6 +2633,16 @@ async function initProfilePage() {
         </div>
       </div>
 
+      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-5">
+        <div class="flex items-center justify-between mb-4">
+          <h3 class="font-bold">📜 ประวัติการเติมเงิน / VIP</h3>
+          <button id="purchaseRefreshBtn" class="text-xs text-zinc-400 hover:text-white">🔄 รีเฟรช</button>
+        </div>
+        <div id="purchaseList" class="text-sm">
+          <div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div>
+        </div>
+      </div>
+
       <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
         <h3 class="font-bold mb-4">🔑 เปลี่ยนรหัสผ่าน</h3>
         <form id="pwForm" class="space-y-4">
@@ -2515,10 +2689,132 @@ async function initProfilePage() {
       msg.classList.add('text-red-400');
     }
   };
+
+  // Purchase history
+  const loadPurchase = async () => {
+    const el = $('#purchaseList');
+    el.innerHTML = `<div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div>`;
+    try {
+      const d = await backendGet('/api/user/purchase-history');
+      renderPurchaseHistory(el, d);
+    } catch (e) {
+      el.innerHTML = errorBanner(e, { title: 'โหลดประวัติไม่สำเร็จ' });
+    }
+  };
+  $('#purchaseRefreshBtn').onclick = loadPurchase;
+  loadPurchase();
+}
+
+function renderPurchaseHistory(container, d) {
+  const topups = (d.topups || []).slice().reverse();  // newest first
+  const vip = (d.vip || []).slice().reverse();
+  const slips = (d.slips || []).slice().reverse();
+  const fmt = iso => {
+    const dt = new Date(iso);
+    return isNaN(dt.getTime()) ? '' : dt.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  const statusBadge = s => {
+    const map = {
+      pending:  'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+      approved: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+      rejected: 'bg-red-500/20 text-red-300 border border-red-500/30',
+    };
+    const label = { pending: 'รออนุมัติ', approved: 'อนุมัติแล้ว', rejected: 'ถูกปฏิเสธ' }[s] || s;
+    return `<span class="text-[10px] font-bold px-2 py-0.5 rounded ${map[s] || 'bg-zinc-700 text-zinc-300'}">${label}</span>`;
+  };
+  const totalCoin = topups.reduce((s, t) => s + (t.coins || 0), 0);
+  const totalSpent = topups.reduce((s, t) => s + (t.pricePaid || 0), 0);
+  const totalVipCoins = vip.reduce((s, v) => s + (v.coinsPaid || 0), 0);
+  const totalVipDays = vip.reduce((s, v) => s + (v.days || 0), 0);
+
+  let html = `
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+      <div class="bg-zinc-800/50 rounded p-2 text-center">
+        <div class="text-[10px] text-zinc-500">เติมสะสม</div>
+        <div class="text-lg font-black text-amber-400">${totalCoin.toLocaleString()}</div>
+        <div class="text-[10px] text-zinc-500">NSV</div>
+      </div>
+      <div class="bg-zinc-800/50 rounded p-2 text-center">
+        <div class="text-[10px] text-zinc-500">จ่ายจริง</div>
+        <div class="text-lg font-black text-zinc-200">฿${totalSpent.toLocaleString()}</div>
+      </div>
+      <div class="bg-zinc-800/50 rounded p-2 text-center">
+        <div class="text-[10px] text-zinc-500">ซื้อ VIP</div>
+        <div class="text-lg font-black text-purple-300">${vip.length}</div>
+        <div class="text-[10px] text-zinc-500">ครั้ง</div>
+      </div>
+      <div class="bg-zinc-800/50 rounded p-2 text-center">
+        <div class="text-[10px] text-zinc-500">รวม VIP</div>
+        <div class="text-lg font-black text-purple-300">${totalVipDays}</div>
+        <div class="text-[10px] text-zinc-500">วัน</div>
+      </div>
+    </div>
+  `;
+
+  // Slips (pending/approved/rejected)
+  if (slips.length) {
+    html += `<div class="mb-3">
+      <div class="text-xs text-zinc-500 mb-1.5 font-bold">📋 สลิปที่อัพโหลด (${slips.length})</div>
+      <div class="space-y-1.5">
+        ${slips.map(s => `
+          <div class="bg-zinc-950/50 border border-zinc-800 rounded px-3 py-2 flex items-center gap-2 text-xs">
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                ${statusBadge(s.status)}
+                <span class="font-bold text-amber-400">+${(s.amount || 0).toLocaleString()} NSV</span>
+                <span class="text-zinc-500">${fmt(s.uploadedAt)}</span>
+              </div>
+              ${s.note ? `<div class="text-zinc-400 mt-0.5">${escapeHtml(s.note)}</div>` : ''}
+              ${s.status === 'rejected' && s.rejectReason ? `<div class="text-red-400 mt-0.5">เหตุผล: ${escapeHtml(s.rejectReason)}</div>` : ''}
+              ${s.status !== 'pending' && s.approvedAt ? `<div class="text-zinc-600 text-[10px] mt-0.5">ดำเนินการ: ${fmt(s.approvedAt)}</div>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  }
+
+  // Topup history (approved/auto)
+  if (topups.length) {
+    html += `<div class="mb-3">
+      <div class="text-xs text-zinc-500 mb-1.5 font-bold">💰 ประวัติเหรียญที่ได้รับ (${topups.length})</div>
+      <div class="space-y-1">
+        ${topups.slice(0, 20).map(t => `
+          <div class="flex items-center justify-between text-xs px-3 py-1.5 bg-zinc-950/50 border border-zinc-800/50 rounded">
+            <span class="text-zinc-500">${fmt(t.at)}</span>
+            <span class="text-zinc-400 flex-1 mx-2 truncate">${escapeHtml(String(t.packageId || ''))}</span>
+            <span class="font-bold text-amber-400">+${(t.coins || 0).toLocaleString()} NSV</span>
+          </div>
+        `).join('')}
+        ${topups.length > 20 ? `<div class="text-[10px] text-zinc-600 text-center pt-1">แสดง 20 รายการล่าสุดจาก ${topups.length}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // VIP purchase history
+  if (vip.length) {
+    html += `<div>
+      <div class="text-xs text-zinc-500 mb-1.5 font-bold">👑 ประวัติ VIP (${vip.length})</div>
+      <div class="space-y-1">
+        ${vip.map(v => `
+          <div class="flex items-center justify-between text-xs px-3 py-1.5 bg-purple-950/20 border border-purple-900/50 rounded">
+            <span class="text-zinc-500">${fmt(v.at)}</span>
+            <span class="text-purple-200 flex-1 mx-2 truncate">${escapeHtml(v.packageLabel || v.packageId || '')} (${v.days} วัน)</span>
+            <span class="font-bold text-purple-300">-${(v.coinsPaid || 0).toLocaleString()} NSV</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  }
+
+  if (!topups.length && !vip.length && !slips.length) {
+    html = `<div class="text-center py-8 text-zinc-500"><div class="text-4xl mb-2">💳</div><p class="text-sm">ยังไม่มีประวัติการเติมเงินหรือซื้อ VIP</p><a href="/topup" class="inline-block mt-3 text-xs text-red-400 hover:underline">ไปหน้าเติมเงิน →</a></div>`;
+  }
+  container.innerHTML = html;
 }
 
 // ============================================================
-// 
+//
 // ============================================================
 
 async function initPrivacyPage() {

@@ -28,6 +28,7 @@ async function initAdminPage() {
       <button data-tab="discounts" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🏷️ ส่วนลด</button>
       <button data-tab="slips"     class="tab-btn px-4 py-2 text-sm rounded-t-lg">🧾 สลิปรอตรวจ</button>
       <button data-tab="history"   class="tab-btn px-4 py-2 text-sm rounded-t-lg">📊 ประวัติเติมเงิน</button>
+      <button data-tab="messages"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📬 ส่งข้อความ</button>
       <button data-tab="site"      class="tab-btn px-4 py-2 text-sm rounded-t-lg">🌐 ระบบ</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
     </div>
@@ -60,6 +61,7 @@ async function loadTab(tab) {
     if (tab === 'discounts') return renderDiscountsTab(c);
     if (tab === 'slips')     return renderSlipsTab(c);
     if (tab === 'history')   return renderHistoryTab(c);
+    if (tab === 'messages')  return renderMessagesTab(c);
     if (tab === 'site')      return renderSiteTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
   } catch (e) {
@@ -844,5 +846,85 @@ async function renderLoginLogTab(c) {
     if (!confirm('ล้างประวัติ login ทั้งหมด? (active sessions ไม่กระทบ)')) return;
     try { await backendDelete('/api/admin/login-log'); renderLoginLogTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  };
+}
+
+// ---------- Messages (ส่งข้อความถึง user) ----------
+async function renderMessagesTab(c) {
+  const { users } = await backendGet('/api/admin/users');
+  users.sort((a, b) => a.username.localeCompare(b.username));
+  c.innerHTML = `
+    <div class="max-w-2xl">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-4">
+        <h3 class="font-bold mb-3">📬 ส่งข้อความถึง User</h3>
+        <p class="text-xs text-zinc-500 mb-4">ข้อความจะปรากฏในกล่องจดหมาย (📬) ของ user พร้อมแจ้งเตือนมุมขวาบน</p>
+        <form id="msgForm" class="space-y-3">
+          <div>
+            <label class="text-xs text-zinc-400 mb-1 block">ส่งถึง</label>
+            <select id="msgTo" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm">
+              <option value="*" class="font-bold">📢 ทั้งหมด (${users.length} คน) — broadcast</option>
+              <option disabled>──────────────</option>
+              ${users.map(u => `<option value="${escapeHtml(u.username)}">${escapeHtml(u.username)} (${u.role})${u.googleEmail ? ' • ' + escapeHtml(u.googleEmail) : ''}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400 mb-1 block">หัวข้อ</label>
+            <input id="msgSubject" type="text" maxlength="200" placeholder="เช่น โปรโมชั่นใหม่" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400 mb-1 block">เนื้อความ</label>
+            <textarea id="msgBody" rows="6" maxlength="3000" placeholder="เขียนข้อความที่อยากส่ง..." class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm resize-none"></textarea>
+            <div class="text-[10px] text-zinc-600 mt-1 text-right"><span id="msgLen">0</span>/3000</div>
+          </div>
+          <div id="msgStatus" class="text-sm hidden"></div>
+          <div class="flex gap-2">
+            <button type="submit" class="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded font-bold">📤 ส่งข้อความ</button>
+            <button type="button" id="msgReset" class="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-sm rounded">ล้าง</button>
+          </div>
+        </form>
+      </div>
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-400">
+        <div class="font-bold text-zinc-300 mb-2">💡 เคล็ดลับ</div>
+        <ul class="list-disc list-inside space-y-1">
+          <li>ระบบจะส่ง inbox อัตโนมัติอยู่แล้วเมื่อ: อนุมัติ/ปฏิเสธสลิป + ผู้ใช้ซื้อ VIP</li>
+          <li>ใช้ broadcast "ทั้งหมด" สำหรับประกาศ ข่าวสาร โปรโมชั่น</li>
+          <li>ข้อความจะถูก escape HTML (ปลอดภัยจาก XSS) — รองรับขึ้นบรรทัดใหม่</li>
+          <li>Inbox ของ user คนหนึ่งเก็บได้สูงสุด 100 ฉบับ (เก่าสุดถูกลบอัตโนมัติ)</li>
+        </ul>
+      </div>
+    </div>
+  `;
+  const body = $('#msgBody');
+  const len = $('#msgLen');
+  body.oninput = () => { len.textContent = body.value.length; };
+
+  $('#msgReset').onclick = () => {
+    $('#msgForm').reset();
+    len.textContent = '0';
+  };
+
+  $('#msgForm').onsubmit = async e => {
+    e.preventDefault();
+    const to = $('#msgTo').value;
+    const subject = $('#msgSubject').value.trim();
+    const bodyText = body.value.trim();
+    const status = $('#msgStatus');
+    status.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    if (!subject && !bodyText) {
+      status.textContent = 'กรุณาใส่หัวข้อหรือเนื้อความอย่างน้อยหนึ่งอย่าง';
+      status.classList.add('text-red-400');
+      return;
+    }
+    if (to === '*' && !confirm(`ส่งข้อความถึง user ทั้งหมด ${users.length} คน?`)) return;
+    try {
+      const r = await backendPost('/api/admin/send-message', { to, subject, body: bodyText });
+      status.textContent = `✓ ส่งสำเร็จ — ถึง ${r.sentTo} ${r.broadcast ? 'คน (broadcast)' : 'คน'}`;
+      status.classList.add('text-emerald-400');
+      $('#msgForm').reset();
+      len.textContent = '0';
+    } catch (ex) {
+      status.textContent = ex.message;
+      status.classList.add('text-red-400');
+    }
   };
 }

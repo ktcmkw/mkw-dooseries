@@ -36,7 +36,7 @@ const MIME = {
 // ---------- Default state (ใช้ตอน data.json ยังไม่มี เช่น first deploy) ----------
 const DEFAULT_DATA = {
   users: {
-    admin: { password: process.env.ADMIN_PASSWORD || 'admin', role: 'admin', coins: 9999999, unlocked: [], created: new Date().toISOString().slice(0, 10) },
+    admin: { password: process.env.ADMIN_PASSWORD || 'admin', role: 'admin', coins: 9999999, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10) },
   },
   sessions: {},
   locks: {},
@@ -58,6 +58,7 @@ const DEFAULT_DATA = {
     { id: 'vip30', days: 30, coins: 1500, label: 'VIP 30 วัน' },
   ],
   topupHistory: [],
+  vipHistory: [],                                             // [{username, packageId, days, coinsPaid, at, vipExpiresAfter}]
   slipPending: [],
   freeMode: { enabled: false, message: '', startAt: null, endAt: null },
   roleLimits: { guestEps: 0, userEps: 10 },
@@ -300,6 +301,33 @@ function audit(data, user, action, details) {
   if (data.auditLog.length > 500) data.auditLog = data.auditLog.slice(-500);
 }
 
+// ---------- Inbox (per-user messages) ----------
+// Message shape: {id, from, subject, body, at, read}
+// Max 100 ต่อ user (ตัด oldest ออก)
+function sendInbox(data, username, msg) {
+  const u = data.users[username];
+  if (!u) return false;
+  u.inbox = u.inbox || [];
+  const m = {
+    id: crypto.randomBytes(6).toString('hex'),
+    from: String(msg.from || 'system').slice(0, 50),
+    subject: String(msg.subject || '').slice(0, 200),
+    body: String(msg.body || '').slice(0, 3000),
+    at: new Date().toISOString(),
+    read: false,
+  };
+  u.inbox.unshift(m);
+  if (u.inbox.length > 100) u.inbox = u.inbox.slice(0, 100);
+  return m;
+}
+function sendInboxBroadcast(data, msg) {
+  let count = 0;
+  for (const username of Object.keys(data.users)) {
+    if (sendInbox(data, username, msg)) count++;
+  }
+  return count;
+}
+
 // ---------- Static ----------
 function serveFile(filePath, res) {
   fs.stat(filePath, (err, stat) => {
@@ -457,7 +485,7 @@ async function handleApi(req, res, pathname, query) {
     if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return badRequest(res, 'username: a-z 0-9 _ ยาว 3-20');
     if (password.length < 3) return badRequest(res, 'password สั้นเกินไป');
     if (data.users[username]) return badRequest(res, 'username นี้ถูกใช้แล้ว');
-    data.users[username] = { password, role: 'user', coins: 0, unlocked: [], created: new Date().toISOString().slice(0, 10) };
+    data.users[username] = { password, role: 'user', coins: 0, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10) };
     const token = randomToken();
     const nowIso = new Date().toISOString();
     data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
@@ -530,7 +558,7 @@ async function handleApi(req, res, pathname, query) {
         while (data.users[username]) { username = base + '_' + i++; }
         data.users[username] = {
           password: crypto.randomBytes(16).toString('hex'), // random — google-only login
-          role: 'user', coins: 0, unlocked: [], created: new Date().toISOString().slice(0, 10),
+          role: 'user', coins: 0, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10),
           googleEmail: profile.email, googleName: profile.name || '',
         };
       }
@@ -662,6 +690,19 @@ async function handleApi(req, res, pathname, query) {
     const base = (u.role === 'vip' && u.vipExpires && u.vipExpires > now) ? u.vipExpires : now;
     u.vipExpires = base + pkg.days * 24 * 60 * 60 * 1000;
     if (u.role !== 'admin') u.role = 'vip';
+    // บันทึก vipHistory + inbox
+    data.vipHistory = data.vipHistory || [];
+    data.vipHistory.push({
+      username: user.username, packageId: pkg.id, packageLabel: pkg.label || '',
+      days: pkg.days, coinsPaid: pkg.coins,
+      at: new Date().toISOString(), vipExpiresAfter: u.vipExpires,
+    });
+    if (data.vipHistory.length > 2000) data.vipHistory = data.vipHistory.slice(-2000);
+    sendInbox(data, user.username, {
+      from: 'system',
+      subject: `🎉 ซื้อ VIP ${pkg.days} วัน สำเร็จ`,
+      body: `คุณได้ซื้อแพ็กเกจ "${pkg.label || pkg.id}" (${pkg.days} วัน)\nใช้เหรียญ: ${pkg.coins} NSV\nVIP หมดอายุ: ${new Date(u.vipExpires).toLocaleString('th-TH')}\n\nขอบคุณที่สนับสนุน ${process.env.APP_NAME || 'MKW Movies'}`,
+    });
     await writeData(data);
     return json(res, 200, { ok: true, role: u.role, vipExpires: u.vipExpires, coins: u.coins, daysAdded: pkg.days });
   }
@@ -1123,20 +1164,113 @@ async function handleApi(req, res, pathname, query) {
     slip.image = '';  // เคลียร์ภาพหลัง approve — เก็บ metadata ไว้ดู audit
     data.topupHistory = data.topupHistory || [];
     data.topupHistory.push({ username: slip.username, packageId: 'slip:' + slip.id, coins: slip.amount, pricePaid: slip.amount, discount: null, at: slip.approvedAt });
+    sendInbox(data, slip.username, {
+      from: 'admin',
+      subject: `✅ สลิปได้รับการอนุมัติ +${slip.amount} NSV`,
+      body: `สลิปเลขที่ ${slip.id} ของคุณได้รับการอนุมัติแล้ว\nจำนวน: +${slip.amount} NSV Coin\nยอดเหรียญปัจจุบัน: ${u.coins} NSV\n\nขอบคุณที่ใช้บริการ`,
+    });
     await writeData(data);
     return json(res, 200, { ok: true, coinsAdded: slip.amount, newBalance: u.coins });
   }
   const mSlipReject = pathname.match(/^\/api\/admin\/slips\/([^/]+)\/reject$/);
   if (mSlipReject && req.method === 'POST') {
     if (!requireAdmin()) return;
+    const body = await readBody(req);
     const slip = (data.slipPending || []).find(s => s.id === mSlipReject[1]);
     if (!slip) return notFound(res);
     slip.status = 'rejected';
     slip.approvedBy = user.username;
     slip.approvedAt = new Date().toISOString();
+    slip.rejectReason = String(body?.reason || '').slice(0, 300);
     slip.image = '';  // เคลียร์ภาพหลัง reject — เก็บ metadata ไว้ดู audit
+    sendInbox(data, slip.username, {
+      from: 'admin',
+      subject: `❌ สลิปถูกปฏิเสธ (${slip.amount} NSV)`,
+      body: `สลิปเลขที่ ${slip.id} ของคุณถูกปฏิเสธ\nจำนวนที่แจ้ง: ${slip.amount} NSV\n${slip.rejectReason ? 'เหตุผล: ' + slip.rejectReason : 'โปรดติดต่อ admin หากมีข้อสงสัย'}\n\nหากต้องการเติมเงินอีกครั้ง กรุณาอัพโหลดสลิปใหม่`,
+    });
     await writeData(data);
     return json(res, 200, { ok: true });
+  }
+
+  // ===== Inbox (user) =====
+  if (req.method === 'GET' && pathname === '/api/user/inbox') {
+    if (!user) return unauthorized(res);
+    const u = data.users[user.username];
+    const messages = u.inbox || [];
+    const unread = messages.filter(m => !m.read).length;
+    return json(res, 200, { messages, unread });
+  }
+  // Lightweight unread count (ใช้ใน heartbeat poll ทุก 60 วิ)
+  if (req.method === 'GET' && pathname === '/api/user/inbox/unread') {
+    if (!user) return json(res, 200, { unread: 0 });
+    const inbox = data.users[user.username]?.inbox || [];
+    return json(res, 200, { unread: inbox.filter(m => !m.read).length });
+  }
+  if (req.method === 'POST' && pathname === '/api/user/inbox/read-all') {
+    if (!user) return unauthorized(res);
+    const u = data.users[user.username];
+    (u.inbox || []).forEach(m => { m.read = true; });
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  if (req.method === 'DELETE' && pathname === '/api/user/inbox') {
+    if (!user) return unauthorized(res);
+    data.users[user.username].inbox = [];
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  const mInboxRead = pathname.match(/^\/api\/user\/inbox\/([^/]+)\/read$/);
+  if (mInboxRead && req.method === 'POST') {
+    if (!user) return unauthorized(res);
+    const id = decodeURIComponent(mInboxRead[1]);
+    const msg = (data.users[user.username].inbox || []).find(m => m.id === id);
+    if (!msg) return notFound(res);
+    msg.read = true;
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  const mInboxDel = pathname.match(/^\/api\/user\/inbox\/([^/]+)$/);
+  if (mInboxDel && req.method === 'DELETE') {
+    if (!user) return unauthorized(res);
+    const id = decodeURIComponent(mInboxDel[1]);
+    const u = data.users[user.username];
+    const before = (u.inbox || []).length;
+    u.inbox = (u.inbox || []).filter(m => m.id !== id);
+    if (u.inbox.length === before) return notFound(res);
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  // ===== Purchase history (user's own: topups + vip + slips) =====
+  if (req.method === 'GET' && pathname === '/api/user/purchase-history') {
+    if (!user) return unauthorized(res);
+    const uname = user.username;
+    const topups = (data.topupHistory || []).filter(t => t.username === uname);
+    const vip = (data.vipHistory || []).filter(v => v.username === uname);
+    const slips = (data.slipPending || []).filter(s => s.username === uname)
+      .map(s => ({ id: s.id, amount: s.amount, note: s.note || '', status: s.status, uploadedAt: s.uploadedAt, approvedAt: s.approvedAt || null, rejectReason: s.rejectReason || '' }));
+    return json(res, 200, { topups, vip, slips });
+  }
+
+  // ===== Admin: send message =====
+  if (req.method === 'POST' && pathname === '/api/admin/send-message') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const to = String(body.to || '').trim();  // username หรือ '*' = broadcast
+    const subject = String(body.subject || '').trim();
+    const text = String(body.body || '').trim();
+    if (!to) return badRequest(res, 'ต้องระบุ to (username หรือ "*" เพื่อส่งทุกคน)');
+    if (!subject && !text) return badRequest(res, 'ต้องมี subject หรือ body อย่างน้อยหนึ่งอย่าง');
+    const msg = { from: user.username, subject, body: text };
+    if (to === '*') {
+      const count = sendInboxBroadcast(data, msg);
+      await writeData(data);
+      return json(res, 200, { ok: true, sentTo: count, broadcast: true });
+    }
+    if (!data.users[to]) return notFound(res, 'ไม่พบ user: ' + to);
+    sendInbox(data, to, msg);
+    await writeData(data);
+    return json(res, 200, { ok: true, sentTo: 1, broadcast: false });
   }
 
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);
