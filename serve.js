@@ -384,17 +384,19 @@ function sendInboxBroadcast(data, msg) {
 // ---------- Welcome gift ----------
 function deliverWelcomeGift(data, username) {
   const wg = data.welcomeGift || {};
-  if (!wg.enabled) return null;
+  if (!wg.enabled) { console.log('[welcome] skip (disabled) →', username); return null; }
   const coins = Math.max(0, parseInt(wg.coins, 10) || 0);
   const vipDays = Math.max(0, parseInt(wg.vipDays, 10) || 0);
-  if (coins === 0 && vipDays === 0) return null;
+  if (coins === 0 && vipDays === 0) { console.log('[welcome] skip (0 coins + 0 vipDays) →', username); return null; }
   const type = coins > 0 && vipDays > 0 ? 'both' : (vipDays > 0 ? 'vip' : 'coin');
-  return sendInbox(data, username, {
+  const m = sendInbox(data, username, {
     from: 'system',
     subject: '🎁 ของขวัญต้อนรับสมาชิกใหม่',
     body: wg.message || 'ยินดีต้อนรับสู่ MKW Movies!',
     gift: { type, coins, vipDays, claimed: false, claimedAt: null },
   });
+  console.log('[welcome] delivered →', username, 'type=' + type, 'coins=' + coins, 'vipDays=' + vipDays, 'msgId=' + (m?.id || '(sendInbox failed)'));
+  return m;
 }
 
 // ---------- Static ----------
@@ -1624,6 +1626,19 @@ async function handleApi(req, res, pathname, query) {
     };
     await writeData(data);
     return json(res, 200, { ok: true, welcomeGift: data.welcomeGift });
+  }
+  // Test: admin ยิง welcome gift ให้ตัวเอง (ช่วย debug ว่า config ทำงานไหม)
+  if (pathname === '/api/admin/welcome-gift/test' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const wg = data.welcomeGift || {};
+    if (!wg.enabled) return badRequest(res, 'ยังไม่ได้เปิดใช้งานของขวัญต้อนรับ (ติ๊ก "เปิดใช้งาน" แล้วกดบันทึกก่อน)');
+    const coins = Math.max(0, parseInt(wg.coins, 10) || 0);
+    const vipDays = Math.max(0, parseInt(wg.vipDays, 10) || 0);
+    if (coins === 0 && vipDays === 0) return badRequest(res, 'ต้องตั้งค่า coins หรือ VIP days อย่างน้อยหนึ่งอย่าง (> 0) แล้วกดบันทึกก่อน');
+    const m = deliverWelcomeGift(data, user.username);
+    if (!m) return badRequest(res, 'deliver ล้มเหลว — ดู server log');
+    await writeData(data);
+    return json(res, 200, { ok: true, messageId: m.id, subject: m.subject, gift: m.gift, deliveredTo: user.username });
   }
 
   // ===== Admin: Register settings (IP limit + ban duration) =====

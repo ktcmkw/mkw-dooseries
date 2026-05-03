@@ -1346,7 +1346,11 @@ async function renderRegisterTab(c) {
             <textarea id="wgMsg" rows="3" maxlength="1000" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm resize-none">${escapeHtml(gift.message || 'ยินดีต้อนรับสู่ MKW Movies!')}</textarea>
           </div>
           <div id="wgStatus" class="text-sm hidden"></div>
-          <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-sm font-bold">💾 บันทึก</button>
+          <div class="flex gap-2 flex-wrap">
+            <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-sm font-bold">💾 บันทึก</button>
+            <button type="button" id="wgTestBtn" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-sm rounded">🧪 ทดสอบส่งให้ตัวเอง</button>
+          </div>
+          <div id="wgTestResult" class="text-xs hidden"></div>
         </form>
       </div>
 
@@ -1424,6 +1428,24 @@ async function renderRegisterTab(c) {
     } catch (ex) {
       st.textContent = ex.message;
       st.classList.add('text-red-400');
+    }
+  };
+
+  $('#wgTestBtn').onclick = async () => {
+    const st = $('#wgTestResult');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400', 'text-amber-400');
+    st.classList.add('text-amber-400');
+    st.textContent = '⏳ กำลังส่ง...';
+    try {
+      const r = await backendPost('/api/admin/welcome-gift/test', {});
+      st.classList.remove('text-amber-400');
+      st.classList.add('text-emerald-400');
+      const g = r.gift || {};
+      st.innerHTML = `✓ ส่งสำเร็จ → ${escapeHtml(r.deliveredTo || '')} (msgId: ${escapeHtml(String(r.messageId || ''))})<br>ของขวัญ: type=${escapeHtml(String(g.type || ''))} • coins=${g.coins || 0} • vipDays=${g.vipDays || 0}<br><span class="text-zinc-500">เปิดกล่องจดหมายของ admin เพื่อตรวจสอบ</span>`;
+    } catch (ex) {
+      st.classList.remove('text-amber-400');
+      st.classList.add('text-red-400');
+      st.textContent = '✗ ' + ex.message;
     }
   };
 

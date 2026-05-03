@@ -87,18 +87,22 @@ const pointsTicker = {
     this.video = null;
     this.accumSec = 0;
     this.lastTime = 0;
+    updatePointsUi();
   },
   _onSecond() {
     const v = this.video;
-    if (!v || v.paused || v.ended || v.seeking || document.hidden) return;
-    // ✅ เช็คว่า currentTime ขยับจริงในอัตราการเล่นปกติ
-    // กัน buffer / network stall (paused=false แต่วิดีโอนิ่ง) + กัน seek (jump > 1.5s)
-    const t = v.currentTime;
-    const dt = t - this.lastTime;
-    this.lastTime = t;
-    if (dt < 0.5 || dt > 1.5) return;
-    this.accumSec++;
-    if (this.accumSec >= 60) this._flush();
+    let counted = false;
+    if (v && !v.paused && !v.ended && !v.seeking && !document.hidden) {
+      const t = v.currentTime;
+      const dt = t - this.lastTime;
+      this.lastTime = t;
+      if (dt >= 0.5 && dt <= 1.5) {
+        this.accumSec++;
+        counted = true;
+      }
+    }
+    updatePointsUi();
+    if (counted && this.accumSec >= 60) this._flush();
   },
   async _flush() {
     if (!auth.user) { this.accumSec = 0; return; }
@@ -119,23 +123,45 @@ function updatePointsUi() {
   const pts = u.points || 0;
   const today = u.pointsToday || 0;
   const cap = u.pointsDailyCap || 10000;
+  const accum = pointsTicker.accumSec || 0;
+  const remaining = 60 - accum;
+  const tickPct = Math.min(100, Math.round(accum / 60 * 100));
+  const dailyPct = Math.min(100, Math.round(today / cap * 100));
+
+  // Header pill
   const hp = document.getElementById('headerPoints');
   if (hp) hp.textContent = pts.toLocaleString();
+
+  // Popup (full)
   const pt = document.getElementById('popupPointsToday');
   const pb = document.getElementById('popupPointsTotal');
+  const pCd = document.getElementById('popupCountdown');
+  const pBar = document.getElementById('popupTickBar');
   if (pt) pt.textContent = `${today.toLocaleString()}/${cap.toLocaleString()}`;
   if (pb) pb.textContent = pts.toLocaleString();
-  // Mini circle (TikTok-style)
+  if (pCd) pCd.textContent = pointsTicker.video ? `+10 พ้อยในอีก ${remaining} วิ` : 'ยังไม่ได้เล่นวิดีโอ';
+  if (pBar) pBar.style.width = tickPct + '%';
+
+  // Mini circle — outer ring = tick progress (60s), inner ring = daily progress
   const mini = document.getElementById('pointsMini');
   if (mini) {
-    const pct = Math.min(100, Math.round(today / cap * 100));
-    mini.style.background = `conic-gradient(#fbbf24 ${pct}%, #3f3f46 ${pct}%)`;
-    const lbl = mini.querySelector('.miniNum');
-    if (lbl) lbl.textContent = pts >= 1000 ? Math.floor(pts / 1000) + 'k' : pts;
+    // ring แสดง tick progress (กำลังนับวิ) — สีทองหมุนเต็มทุก 60 วิ
+    mini.style.background = `conic-gradient(#fbbf24 ${tickPct}%, #3f3f46 ${tickPct}%)`;
+    const lblNum = mini.querySelector('.miniNum');
+    if (lblNum) lblNum.textContent = pointsTicker.video ? remaining + 's' : '⏸';
+    const lblPts = mini.querySelector('.miniPts');
+    if (lblPts) lblPts.textContent = pts >= 1000 ? Math.floor(pts / 1000) + 'k' : pts;
+    // อัปเดต title แสดง daily progress
+    mini.title = `วันนี้ ${today.toLocaleString()}/${cap.toLocaleString()} (${dailyPct}%) • คงเหลือ ${pts.toLocaleString()} • แตะเพื่อขยาย • กดค้างลากได้`;
   }
 }
 
-// State machine: 'popup' | 'mini' | 'hidden'
+// ---------- Online Points popup state machine ----------
+// State: 'mini' (default) | 'popup' | 'hidden'
+// flow: เริ่ม = mini → กด mini = popup → กด ✕ ใน popup = ย่อกลับ mini → ✕ ใน mini = hidden
+const POINTS_POS_KEY = 'mkw_points_pos';
+const POINTS_HIDDEN_KEY = 'mkw_points_popup_hidden';
+
 function _pointsRemoveAll() {
   document.getElementById('pointsPopup')?.remove();
   document.getElementById('pointsMini')?.remove();
@@ -149,80 +175,158 @@ function _pointsKeepInFs(el) {
   document.addEventListener('fullscreenchange', moveOnFs);
   document.addEventListener('webkitfullscreenchange', moveOnFs);
   el._moveOnFs = moveOnFs;
+  // ★ FIX: เรียกทันทีเพื่อ reparent ตอนสร้างถ้าอยู่ใน fullscreen (ก่อนหน้านี้ปุ่มกดไม่ได้ใน fullscreen)
+  moveOnFs();
+}
+function _restorePointsPos(el) {
+  try {
+    const p = JSON.parse(localStorage.getItem(POINTS_POS_KEY) || 'null');
+    if (p && Number.isFinite(p.left) && Number.isFinite(p.top)) {
+      // ตรวจอย่าให้หลุดขอบจอ
+      const maxL = window.innerWidth - 60;
+      const maxT = window.innerHeight - 60;
+      const left = Math.max(4, Math.min(maxL, p.left));
+      const top = Math.max(4, Math.min(maxT, p.top));
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      el.style.left = left + 'px';
+      el.style.top = top + 'px';
+    }
+  } catch {}
+}
+function _enableDrag(el) {
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, moved = false, pid = null;
+  const onDown = e => {
+    if (e.target.closest('button, a')) return;
+    const rect = el.getBoundingClientRect();
+    ox = rect.left; oy = rect.top;
+    sx = e.clientX; sy = e.clientY;
+    dragging = true; moved = false; pid = e.pointerId;
+    el.style.right = 'auto'; el.style.bottom = 'auto';
+    el.style.left = ox + 'px'; el.style.top = oy + 'px';
+    el.style.cursor = 'grabbing';
+    try { el.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  };
+  const onMove = e => {
+    if (!dragging || e.pointerId !== pid) return;
+    const dx = e.clientX - sx;
+    const dy = e.clientY - sy;
+    if (!moved && Math.abs(dx) + Math.abs(dy) < 4) return;  // dead zone — กันลั่นคลิก
+    moved = true;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const x = Math.max(4, Math.min(window.innerWidth - w - 4, ox + dx));
+    const y = Math.max(4, Math.min(window.innerHeight - h - 4, oy + dy));
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+  };
+  const onUp = e => {
+    if (!dragging) return;
+    dragging = false;
+    el.style.cursor = '';
+    try { el.releasePointerCapture(e.pointerId); } catch {}
+    if (moved) {
+      try {
+        localStorage.setItem(POINTS_POS_KEY, JSON.stringify({
+          left: parseInt(el.style.left, 10), top: parseInt(el.style.top, 10),
+        }));
+      } catch {}
+      // ป้องกัน click event ลั่นหลังลาก
+      el._justDragged = true;
+      setTimeout(() => { el._justDragged = false; }, 50);
+    }
+  };
+  el.addEventListener('pointerdown', onDown);
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup', onUp);
+  el.addEventListener('pointercancel', onUp);
 }
 
-function showPointsPopup() {
+function showPointsCircle() {
   if (!auth.user) return;
-  if (localStorage.getItem('mkw_points_popup_hidden') === '1') return;
-  if (document.getElementById('pointsPopup')) return;
+  if (localStorage.getItem(POINTS_HIDDEN_KEY) === '1') return;
+  if (document.getElementById('pointsMini')) return;
   _pointsRemoveAll();
   const u = auth.user;
-  const popup = document.createElement('div');
-  popup.id = 'pointsPopup';
-  popup.className = 'fixed right-3 bottom-20 z-[9999] w-[210px] bg-black/85 backdrop-blur-sm border border-amber-500/40 rounded-xl p-3 shadow-2xl text-xs';
-  popup.innerHTML = `
-    <div class="flex items-center justify-between mb-2">
-      <span class="font-bold text-amber-300 text-sm">⭐ พ้อยออนไลน์</span>
-      <div class="flex items-center gap-1">
-        <button id="minPointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ย่อ" title="ย่อเป็นวงกลม">−</button>
-        <button id="closePointsPopup" class="w-5 h-5 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none" aria-label="ปิด" title="ซ่อน">✕</button>
-      </div>
+  const today = u.pointsToday || 0;
+  const cap = u.pointsDailyCap || 10000;
+  const pts = u.points || 0;
+
+  const mini = document.createElement('div');
+  mini.id = 'pointsMini';
+  mini.className = 'fixed right-3 bottom-20 z-[9999] w-14 h-14 rounded-full shadow-2xl select-none';
+  mini.style.touchAction = 'none';
+  mini.style.cursor = 'grab';
+  mini.style.background = `conic-gradient(#fbbf24 0%, #3f3f46 0%)`;
+  mini.innerHTML = `
+    <div class="absolute inset-1 rounded-full bg-black/90 flex flex-col items-center justify-center pointer-events-none">
+      <span class="text-amber-300 text-[9px] leading-none">⭐</span>
+      <span class="miniNum text-amber-400 text-[11px] font-black leading-none mt-0.5">⏸</span>
+      <span class="miniPts text-zinc-400 text-[8px] leading-none mt-0.5">${pts >= 1000 ? Math.floor(pts / 1000) + 'k' : pts}</span>
     </div>
-    <div class="space-y-1">
-      <div class="flex items-center justify-between"><span class="text-zinc-400">วันนี้:</span><span id="popupPointsToday" class="font-bold text-amber-300">${(u.pointsToday || 0).toLocaleString()}/${(u.pointsDailyCap || 10000).toLocaleString()}</span></div>
-      <div class="flex items-center justify-between"><span class="text-zinc-400">คงเหลือ:</span><span id="popupPointsTotal" class="font-bold text-amber-400">${(u.points || 0).toLocaleString()}</span></div>
-      <div class="text-[10px] text-zinc-500 text-center pt-1 border-t border-zinc-800 mt-1">1 นาที = 10 พ้อย • 100 พ้อย = 1 MKW</div>
-      <a href="/topup" class="block mt-1 text-center text-[11px] text-amber-300 hover:text-amber-200 underline">แลกเป็น MKW →</a>
-    </div>
+    <button id="closePointsMini" class="absolute -top-1 -right-1 w-5 h-5 bg-zinc-800 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-[10px] leading-none shadow z-10" aria-label="ซ่อน">✕</button>
   `;
-  document.body.appendChild(popup);
-  _pointsKeepInFs(popup);
-  popup.querySelector('#minPointsPopup').onclick = () => showPointsMini();
-  popup.querySelector('#closePointsPopup').onclick = () => {
+  document.body.appendChild(mini);
+  _restorePointsPos(mini);
+  _pointsKeepInFs(mini);
+  _enableDrag(mini);
+  // คลิกที่วงกลม (ไม่ใช่ปุ่ม X / ไม่ใช่หลังลาก) → ขยายเป็น popup
+  mini.addEventListener('click', e => {
+    if (mini._justDragged) return;
+    if (e.target.closest('#closePointsMini')) return;
+    showPointsPanel();
+  });
+  mini.querySelector('#closePointsMini').onclick = e => {
+    e.stopPropagation();
     _pointsRemoveAll();
-    localStorage.setItem('mkw_points_popup_hidden', '1');
+    localStorage.setItem(POINTS_HIDDEN_KEY, '1');
   };
+  updatePointsUi();
 }
 
-function showPointsMini() {
+function showPointsPanel() {
   if (!auth.user) return;
   _pointsRemoveAll();
   const u = auth.user;
   const today = u.pointsToday || 0;
   const cap = u.pointsDailyCap || 10000;
-  const pct = Math.min(100, Math.round(today / cap * 100));
-  const num = (u.points || 0) >= 1000 ? Math.floor((u.points || 0) / 1000) + 'k' : (u.points || 0);
+  const pts = u.points || 0;
 
-  const mini = document.createElement('div');
-  mini.id = 'pointsMini';
-  mini.className = 'fixed right-3 bottom-20 z-[9999] w-14 h-14 rounded-full shadow-2xl cursor-pointer';
-  mini.style.background = `conic-gradient(#fbbf24 ${pct}%, #3f3f46 ${pct}%)`;
-  mini.title = 'แตะเพื่อขยายพ้อยออนไลน์';
-  mini.innerHTML = `
-    <div class="absolute inset-1 rounded-full bg-black/90 flex flex-col items-center justify-center select-none">
-      <span class="text-amber-300 text-[10px] leading-none">⭐</span>
-      <span class="miniNum text-amber-400 text-xs font-black leading-none mt-0.5">${num}</span>
+  const popup = document.createElement('div');
+  popup.id = 'pointsPopup';
+  popup.className = 'fixed right-3 bottom-20 z-[9999] w-[230px] bg-black/90 backdrop-blur-sm border border-amber-500/40 rounded-xl p-3 shadow-2xl text-xs';
+  popup.innerHTML = `
+    <div class="flex items-center justify-between mb-2">
+      <span class="font-bold text-amber-300 text-sm">⭐ พ้อยออนไลน์</span>
+      <button id="closePointsPopup" class="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-white text-base leading-none rounded hover:bg-zinc-800" aria-label="ย่อกลับ" title="ย่อกลับเป็นวงกลม">✕</button>
     </div>
-    <button id="closePointsMini" class="absolute -top-1 -right-1 w-5 h-5 bg-zinc-800 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-[10px] leading-none shadow" aria-label="ซ่อน">✕</button>
+    <div class="space-y-1.5">
+      <div class="flex items-center justify-between"><span class="text-zinc-400">วันนี้:</span><span id="popupPointsToday" class="font-bold text-amber-300">${today.toLocaleString()}/${cap.toLocaleString()}</span></div>
+      <div class="flex items-center justify-between"><span class="text-zinc-400">คงเหลือ:</span><span id="popupPointsTotal" class="font-bold text-amber-400">${pts.toLocaleString()}</span></div>
+      <div class="pt-2 border-t border-zinc-800">
+        <div id="popupCountdown" class="text-[11px] text-zinc-300 text-center mb-1">ยังไม่ได้เล่นวิดีโอ</div>
+        <div class="h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+          <div id="popupTickBar" class="h-full bg-gradient-to-r from-amber-500 to-yellow-300 transition-all" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="text-[10px] text-zinc-500 text-center pt-1">1 นาที = 10 พ้อย • 100 พ้อย = 1 MKW</div>
+      <a href="/topup" class="block mt-1 text-center text-[11px] text-amber-300 hover:text-amber-200 underline">แลกเป็น MKW →</a>
+    </div>
   `;
-  document.body.appendChild(mini);
-  _pointsKeepInFs(mini);
-  // คลิกที่วงกลม (ไม่ใช่ปุ่ม X) → ขยายกลับ
-  mini.addEventListener('click', e => {
-    if (e.target.closest('#closePointsMini')) return;
-    showPointsPopup();
-  });
-  mini.querySelector('#closePointsMini').onclick = e => {
-    e.stopPropagation();
+  document.body.appendChild(popup);
+  _pointsKeepInFs(popup);
+  // ✕ → ย่อกลับเป็น mini circle (ไม่ใช่ซ่อน)
+  popup.querySelector('#closePointsPopup').onclick = () => {
     _pointsRemoveAll();
-    localStorage.setItem('mkw_points_popup_hidden', '1');
+    showPointsCircle();
   };
+  updatePointsUi();
 }
 
-// เปิด popup จากปุ่มใน player controls — เคลียร์ flag hidden เสมอ
+// เปิดจากปุ่ม ⭐ ใน player → ล้าง flag hidden แล้วแสดง mini (default state)
 function reopenPointsPopup() {
-  localStorage.removeItem('mkw_points_popup_hidden');
-  showPointsPopup();
+  localStorage.removeItem(POINTS_HIDDEN_KEY);
+  showPointsCircle();
 }
 
 // ---------- API clients ----------
@@ -230,14 +334,29 @@ async function apiGet(path, source) {
   const src = source || 'dramabox';
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(apiBase(src) + path);
-    if (res.ok) return res.json();
-    const body = await res.text().catch(() => '');
-    lastErr = new Error(`HTTP ${res.status} — [${src}] ${path}`);
-    lastErr.status = res.status; lastErr.endpoint = path; lastErr.source = src; lastErr.body = body.slice(0, 400);
-    // Retry เฉพาะ 5xx (อัปสตรีมล่มชั่วคราว เช่น DramaWave 503 "Sistem sedang sibuk")
-    if (res.status < 500 || res.status >= 600 || attempt === 2) throw lastErr;
-    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);  // 15s timeout/attempt — กัน upstream ค้าง
+    try {
+      const res = await fetch(apiBase(src) + path, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) return res.json();
+      const body = await res.text().catch(() => '');
+      lastErr = new Error(`HTTP ${res.status} — [${src}] ${path}`);
+      lastErr.status = res.status; lastErr.endpoint = path; lastErr.source = src; lastErr.body = body.slice(0, 400);
+      // Retry เฉพาะ 5xx (อัปสตรีมล่มชั่วคราว เช่น DramaWave 503 "Sistem sedang sibuk")
+      if (res.status < 500 || res.status >= 600 || attempt === 2) throw lastErr;
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        lastErr = new Error(`Timeout 15s — [${src}] ${path}`);
+        lastErr.status = 0; lastErr.source = src; lastErr.endpoint = path;
+        if (attempt === 2) throw lastErr;
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    }
   }
   throw lastErr;
 }
@@ -2192,9 +2311,9 @@ async function playEpisode(ep, ctx) {
   // Auto-next + next ep button + swipe
   setupAutoNext(ep, video, ctx, ctrl, playerOpts);
 
-  // Online Points — นับเฉพาะตอนวิดีโอเล่น + popup ลอย
+  // Online Points — นับเฉพาะตอนวิดีโอเล่น + แสดง mini circle (default)
   pointsTicker.attach(video);
-  showPointsPopup();
+  showPointsCircle();
 }
 
 function buildCustomControls(video, wrap) {
