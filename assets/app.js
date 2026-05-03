@@ -1543,7 +1543,7 @@ async function initPlayPage() {
     $('#navEp').innerHTML = html;
     $$('#navEp a').forEach(a => a.onclick = ev => {
       ev.preventDefault();
-      navEpClickWithCooldown(parseInt(a.dataset.idx, 10), { bookId, source, total, episodes, detail });
+      epChangeWithCooldown(parseInt(a.dataset.idx, 10), { bookId, source, total, episodes, detail }, a);
     });
   }
 
@@ -1587,34 +1587,50 @@ async function initPlayPage() {
 }
 
 // EP click cooldown — กันกดถี่ๆ (5 วิ) นอก fullscreen
+// Cover ทั้ง grid #navEp a และปุ่ม #prevEpBtn / #nextEpBtn — sourceBtn คือปุ่มที่ user กด (โชว์ countdown ที่ปุ่มนั้น)
 let _epCooldownActive = false;
-function navEpClickWithCooldown(targetIdx, ctx) {
+function epChangeWithCooldown(targetIdx, ctx, sourceBtn) {
   if (_epCooldownActive) return;
   const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
   if (fsEl) return goToEpisode(targetIdx, ctx);
   const links = $$('#navEp a');
-  if (!links.length) return goToEpisode(targetIdx, ctx);
-  const targetA = links.find(a => parseInt(a.dataset.idx, 10) === targetIdx);
-  if (!targetA) return goToEpisode(targetIdx, ctx);
+  const prevBtn = $('#prevEpBtn');
+  const nextBtn = $('#nextEpBtn');
+  const navTarget = links.find(a => parseInt(a.dataset.idx, 10) === targetIdx);
+  const target = sourceBtn || navTarget;
+  if (!target) return goToEpisode(targetIdx, ctx);
   _epCooldownActive = true;
   const orig = new Map();
-  links.forEach(a => {
-    orig.set(a, { className: a.className, html: a.innerHTML });
-    if (a !== targetA) a.classList.add('opacity-30', 'pointer-events-none', 'grayscale');
-    else a.classList.add('ring-2', 'ring-amber-400');
+  const all = [...links];
+  if (prevBtn) all.push(prevBtn);
+  if (nextBtn) all.push(nextBtn);
+  all.forEach(el => {
+    orig.set(el, { className: el.className, html: el.innerHTML, disabled: el.disabled });
+    if (el !== target) {
+      el.classList.add('opacity-30', 'pointer-events-none', 'grayscale');
+      if ('disabled' in el) el.disabled = true;
+    } else if (el.tagName === 'A') {
+      el.classList.add('ring-2', 'ring-amber-400');
+    } else {
+      el.classList.add('ring-2', 'ring-amber-300');
+    }
   });
   let s = 5;
   const restore = () => {
-    links.forEach(a => {
-      const o = orig.get(a);
+    all.forEach(el => {
+      const o = orig.get(el);
       if (!o) return;
-      a.className = o.className;
-      a.innerHTML = o.html;
+      el.className = o.className;
+      el.innerHTML = o.html;
+      if ('disabled' in el) el.disabled = o.disabled;
     });
     _epCooldownActive = false;
   };
+  const baseLabel = target.tagName === 'A'
+    ? String(targetIdx)
+    : (target.id === 'prevEpBtn' ? `◀ EP ${targetIdx}` : `EP ${targetIdx} ▶`);
   const tick = () => {
-    targetA.innerHTML = `${targetIdx} <span class="ml-1 text-amber-300 font-black">${s}s</span>`;
+    target.innerHTML = `${baseLabel} <span class="ml-1 text-amber-300 font-black">${s}s</span>`;
     if (s <= 0) {
       clearInterval(timer);
       restore();
@@ -2267,8 +2283,8 @@ function setupAutoNext(ep, video, ctx, ctrl, playerOpts) {
     autoNext = e.target.checked;
     localStorage.setItem('mkw_autonext', autoNext ? '1' : '0');
   };
-  if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => goToEpisode(prevEp.chapterIndex, ctx);
-  if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => goToEpisode(nextEp.chapterIndex, ctx);
+  if (prevEp && $('#prevEpBtn')) $('#prevEpBtn').onclick = () => epChangeWithCooldown(prevEp.chapterIndex, ctx, $('#prevEpBtn'));
+  if (nextEp && $('#nextEpBtn')) $('#nextEpBtn').onclick = () => epChangeWithCooldown(nextEp.chapterIndex, ctx, $('#nextEpBtn'));
 
   // Swipe gesture (pointer events — ใช้ได้ทุก input type + fullscreen)
   // ขึ้น=ep ก่อนหน้า / ลง=ep ถัดไป → popup ยืนยัน (video เล่นต่อปกติ)

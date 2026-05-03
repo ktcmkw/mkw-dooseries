@@ -578,35 +578,51 @@ async function renderGiftcardsTab(c) {
           <input id="gVipDays" type="number" min="1" max="3650" placeholder="หรือพิมพ์เอง (วัน)" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
           <p class="text-[10px] text-zinc-500 mt-1">นับเวลาตั้งแต่ user แลก code (ถ้ายัง VIP อยู่ จะต่ออายุจากวันหมดอายุเดิม)</p>
         </div>
+        <div class="bg-zinc-950 border border-zinc-800 rounded p-3">
+          <label class="text-xs text-zinc-400 mb-1 block">จำนวนคนที่ใช้ได้ (1-999)</label>
+          <div class="flex gap-2 flex-wrap items-center">
+            <button type="button" data-n="1"   class="use-preset px-3 py-1.5 bg-zinc-800 hover:bg-emerald-600 text-xs rounded">1 คน</button>
+            <button type="button" data-n="5"   class="use-preset px-3 py-1.5 bg-zinc-800 hover:bg-emerald-600 text-xs rounded">5 คน</button>
+            <button type="button" data-n="10"  class="use-preset px-3 py-1.5 bg-zinc-800 hover:bg-emerald-600 text-xs rounded">10 คน</button>
+            <button type="button" data-n="100" class="use-preset px-3 py-1.5 bg-zinc-800 hover:bg-emerald-600 text-xs rounded">100 คน</button>
+            <input id="gMaxUses" type="number" min="1" max="999" value="1" class="px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded text-sm w-24"/>
+          </div>
+          <p class="text-[10px] text-zinc-500 mt-1">user แต่ละคนใช้โค้ดเดียวกันได้ครั้งเดียว (กันใช้ซ้ำคนเดิม)</p>
+        </div>
       </form>
     </div>
     <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-zinc-800/50 text-zinc-400 text-xs">
-          <tr><th class="px-4 py-3 text-left">Code</th><th class="px-4 py-3 text-left">ประเภท</th><th class="px-4 py-3 text-right">มูลค่า</th><th class="px-4 py-3 text-left">สถานะ</th><th class="px-4 py-3 text-left">ใช้โดย</th><th class="px-4 py-3 text-right"></th></tr>
+          <tr><th class="px-4 py-3 text-left">Code</th><th class="px-4 py-3 text-left">ประเภท</th><th class="px-4 py-3 text-right">มูลค่า</th><th class="px-4 py-3 text-center">ใช้แล้ว</th><th class="px-4 py-3 text-left">สถานะ</th><th class="px-4 py-3 text-right"></th></tr>
         </thead>
         <tbody>
           ${entries.length ? entries.map(([code, g]) => {
             const isVip = g.type === 'vip';
+            const max = Number.isFinite(g.maxUses) && g.maxUses > 0 ? g.maxUses : 1;
+            const usedCount = Array.isArray(g.uses) ? g.uses.length : (g.used ? 1 : 0);
+            const full = usedCount >= max;
             return `
             <tr class="border-t border-zinc-800">
               <td class="px-4 py-3 font-mono">${escapeHtml(code)}</td>
               <td class="px-4 py-3 text-xs">${isVip ? '<span class="px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded">👑 VIP</span>' : '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-300 rounded">💰 Coin</span>'}</td>
               <td class="px-4 py-3 text-right font-bold ${isVip ? 'text-purple-300' : 'text-amber-400'}">${isVip ? `${g.vipDays || 0} วัน` : `${(g.coins || 0).toLocaleString()}`}</td>
-              <td class="px-4 py-3">${g.used ? '<span class="text-zinc-500 text-xs">✓ ใช้แล้ว</span>' : '<span class="text-emerald-400 text-xs">● พร้อมใช้</span>'}</td>
-              <td class="px-4 py-3 text-xs text-zinc-500">${escapeHtml(g.usedBy || '-')}</td>
+              <td class="px-4 py-3 text-center"><button class="show-uses text-xs px-2 py-1 ${usedCount > 0 ? 'bg-blue-500/20 hover:bg-blue-500/30 text-blue-300' : 'bg-zinc-800 text-zinc-500'} rounded font-mono" data-code="${escapeHtml(code)}" ${usedCount === 0 ? 'disabled' : ''}>${usedCount}/${max}</button></td>
+              <td class="px-4 py-3">${full ? '<span class="text-zinc-500 text-xs">✓ เต็มแล้ว</span>' : '<span class="text-emerald-400 text-xs">● ใช้ได้</span>'}</td>
               <td class="px-4 py-3 text-right"><button class="rm-gc text-xs px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded" data-code="${escapeHtml(code)}">ลบ</button></td>
             </tr>`;
           }).join('') : `<tr><td colspan="6" class="px-4 py-10 text-center text-zinc-500">ยังไม่มี gift card</td></tr>`}
         </tbody>
       </table>
     </div>
+    <div id="gcModal"></div>
   `;
 
   const typeRadios = $$('input[name="gType"]');
   const coinInput = $('#gCoins');
   const vipBox = $('#gVipBox');
   const vipDaysInput = $('#gVipDays');
+  const maxUsesInput = $('#gMaxUses');
   const updateForm = () => {
     const t = document.querySelector('input[name="gType"]:checked').value;
     if (t === 'vip') {
@@ -622,12 +638,15 @@ async function renderGiftcardsTab(c) {
   typeRadios.forEach(r => r.onchange = updateForm);
   updateForm();
   $$('.vip-preset').forEach(b => b.onclick = () => { vipDaysInput.value = b.dataset.d; });
+  $$('.use-preset').forEach(b => b.onclick = () => { maxUsesInput.value = b.dataset.n; });
 
   $('#gForm').onsubmit = async e => {
     e.preventDefault();
     const type = document.querySelector('input[name="gType"]:checked').value;
     const code = $('#gCode').value.trim().toUpperCase();
-    const payload = { code, type };
+    const maxUses = parseInt(maxUsesInput.value, 10);
+    if (!maxUses || maxUses < 1 || maxUses > 999) { alert('จำนวนคนใช้ต้อง 1-999'); return; }
+    const payload = { code, type, maxUses };
     if (type === 'vip') {
       const days = parseInt(vipDaysInput.value, 10);
       if (!days || days < 1 || days > 3650) { alert('กรุณาใส่จำนวนวัน VIP (1-3650)'); return; }
@@ -646,6 +665,34 @@ async function renderGiftcardsTab(c) {
     if (!confirm(`ลบ gift card "${b.dataset.code}"?`)) return;
     try { await backendDelete(`/api/admin/giftcards/${encodeURIComponent(b.dataset.code)}`); renderGiftcardsTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('.show-uses').forEach(b => b.onclick = () => {
+    const code = b.dataset.code;
+    const g = giftcards[code];
+    if (!g) return;
+    const uses = Array.isArray(g.uses) ? g.uses : (g.used && g.usedBy ? [{ username: g.usedBy, at: g.usedAt }] : []);
+    const fmt = iso => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+    const max = Number.isFinite(g.maxUses) && g.maxUses > 0 ? g.maxUses : 1;
+    const rows = uses.length
+      ? uses.slice().reverse().map((x, i) => `
+        <tr class="border-t border-zinc-800">
+          <td class="px-3 py-2 text-xs text-zinc-500 text-right">#${uses.length - i}</td>
+          <td class="px-3 py-2 font-mono text-zinc-200">${escapeHtml(x.username)}</td>
+          <td class="px-3 py-2 text-xs text-zinc-400">${fmt(x.at)}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="3" class="px-3 py-8 text-center text-zinc-500 text-sm">ยังไม่มีคนใช้</td></tr>`;
+    $('#gcModal').innerHTML = `
+      <div class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.8);backdrop-filter:blur(4px)" id="gcOverlay">
+        <div class="bg-zinc-900 border border-zinc-700 rounded-xl max-w-lg w-full max-h-[80vh] overflow-hidden flex flex-col">
+          <div class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+            <h3 class="font-bold">📋 ประวัติการใช้ <span class="font-mono text-amber-400">${escapeHtml(code)}</span> <span class="text-xs text-zinc-500 font-normal">(${uses.length}/${max})</span></h3>
+            <button id="gcClose" class="text-zinc-400 hover:text-white text-xl leading-none">✕</button>
+          </div>
+          <div class="overflow-auto"><table class="w-full"><tbody>${rows}</tbody></table></div>
+        </div>
+      </div>`;
+    $('#gcClose').onclick = () => $('#gcModal').innerHTML = '';
+    $('#gcOverlay').onclick = ev => { if (ev.target.id === 'gcOverlay') $('#gcModal').innerHTML = ''; };
   });
 }
 
@@ -779,14 +826,16 @@ async function renderHistoryTab(c) {
 
 // ---------- Site (announcement + maintenance) ----------
 async function renderSiteTab(c) {
-  const [anRes, mtRes, trRes] = await Promise.all([
+  const [anRes, mtRes, trRes, atRes] = await Promise.all([
     backendGet('/api/admin/announcement'),
     backendGet('/api/admin/maintenance'),
     backendGet('/api/admin/tracking'),
+    backendGet('/api/admin/auth-toggle'),
   ]);
   const an = anRes.announcement || { enabled: false, text: '', color: 'blue' };
   const mt = mtRes.maintenance || { enabled: false, message: '' };
   const trackingOff = !!trRes.disableTracking;
+  const at = atRes || { loginDisabled: false, registerDisabled: false, message: '' };
   const colors = ['blue', 'amber', 'red', 'emerald'];
 
   c.innerHTML = `
@@ -838,6 +887,43 @@ async function renderSiteTab(c) {
       ${mt.setBy ? `<span class="ml-3 text-xs text-zinc-500">โดย ${escapeHtml(mt.setBy)} • ${escapeHtml((mt.setAt || '').slice(0, 19).replace('T', ' '))}</span>` : ''}
     </div>
 
+    <div class="bg-zinc-900 border ${(at.loginDisabled || at.registerDisabled) ? 'border-purple-500/50' : 'border-zinc-800'} rounded-xl p-5 mb-5">
+      <div class="flex items-start gap-3 mb-3">
+        <div class="text-2xl">🔐</div>
+        <div class="flex-1">
+          <h3 class="font-bold">ปิดระบบ Login / Register</h3>
+          <p class="text-xs text-zinc-500 mt-0.5">
+            ใช้กรณี: ป้องกันสมัครรัวๆ, ถูก spam, หรือกำลัง maintain DB
+            • <strong class="text-purple-300">admin ยัง login ได้ปกติ</strong> ทุกกรณี
+          </p>
+        </div>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3 mb-3">
+        <label class="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded p-3 cursor-pointer">
+          <div>
+            <div class="font-bold text-sm">ปิดระบบ Login</div>
+            <div class="text-[10px] text-zinc-500">user ทั่วไปจะ login ไม่ได้ (ยกเว้น admin)</div>
+          </div>
+          <input type="checkbox" id="atLoginToggle" class="sr-only peer" ${at.loginDisabled ? 'checked' : ''}/>
+          <div class="relative w-12 h-7 bg-zinc-700 peer-checked:bg-purple-600 rounded-full transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-transform peer-checked:after:translate-x-5"></div>
+        </label>
+        <label class="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded p-3 cursor-pointer">
+          <div>
+            <div class="font-bold text-sm">ปิดสมัครสมาชิก</div>
+            <div class="text-[10px] text-zinc-500">ปิด register form + Google OAuth สำหรับ user ใหม่</div>
+          </div>
+          <input type="checkbox" id="atRegisterToggle" class="sr-only peer" ${at.registerDisabled ? 'checked' : ''}/>
+          <div class="relative w-12 h-7 bg-zinc-700 peer-checked:bg-purple-600 rounded-full transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-transform peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <div>
+        <label class="text-xs text-zinc-400 mb-1 block">ข้อความที่แสดงให้ user (เมื่อพยายาม login/register)</label>
+        <textarea id="atMsg" rows="2" placeholder="เช่น: ระบบสมัครสมาชิกปิดชั่วคราว — กลับมาวันที่ 5 พ.ค." class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm">${escapeHtml(at.message || '')}</textarea>
+      </div>
+      <button id="atSave" class="mt-3 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-sm font-semibold">บันทึก</button>
+      ${(at.loginDisabled || at.registerDisabled) ? `<span class="ml-3 text-xs text-purple-300">● ${at.loginDisabled ? 'Login ปิด ' : ''}${at.registerDisabled ? 'Register ปิด' : ''}</span>` : ''}
+    </div>
+
     <div class="bg-zinc-900 border ${trackingOff ? 'border-orange-500/50' : 'border-zinc-800'} rounded-xl p-5 mb-5">
       <div class="flex items-start gap-3 mb-2">
         <div class="text-2xl">⚡</div>
@@ -877,6 +963,17 @@ async function renderSiteTab(c) {
     if (enabled && !confirm('เปิด Maintenance Mode — ผู้ใช้ทั่วไปจะดูเว็บไม่ได้ ยืนยัน?')) return;
     try {
       await backendPost('/api/admin/maintenance', { enabled, message: $('#mtMsg').value.trim() });
+      renderSiteTab(c);
+    } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
+  };
+
+  $('#atSave').onclick = async () => {
+    const loginDisabled = $('#atLoginToggle').checked;
+    const registerDisabled = $('#atRegisterToggle').checked;
+    const message = $('#atMsg').value.trim();
+    if (loginDisabled && !confirm('ยืนยันปิด login? — user ทั่วไปทุกคนจะ login ไม่ได้ (admin ยังเข้าได้)')) return;
+    try {
+      await backendPost('/api/admin/auth-toggle', { loginDisabled, registerDisabled, message });
       renderSiteTab(c);
     } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
   };

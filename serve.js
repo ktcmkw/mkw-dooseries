@@ -41,7 +41,7 @@ const DEFAULT_DATA = {
   sessions: {},
   locks: {},
   giftcards: {
-    NSVWELCOME: { coins: 100, used: false, usedBy: null, createdBy: 'admin' },
+    NSVWELCOME: { type: 'coin', coins: 100, maxUses: 1, uses: [], used: false, usedBy: null, createdBy: 'admin' },
   },
   discounts: {
     SAVE10: { percent: 10, active: true },
@@ -59,11 +59,15 @@ const DEFAULT_DATA = {
   ],
   topupHistory: [],
   vipHistory: [],                                             // [{username, packageId, days, coinsPaid, at, vipExpiresAfter}]
+  adminInbox: [],                                             // [{id, fromUsername, fromIp, subject, body, at, read, deletedAt?}] — ข้อความ user→admin
   slipPending: [],
   freeMode: { enabled: false, message: '', startAt: null, endAt: null },
   roleLimits: { guestEps: 0, userEps: 10 },
   announcement: { enabled: false, text: '', color: 'blue' },  // banner ใต้ header
   maintenance: { enabled: false, message: '' },               // ปิดเว็บชั่วคราว (admin ผ่านได้)
+  loginDisabled: false,                                        // ปิดระบบ login (admin ยัง login ได้)
+  registerDisabled: false,                                     // ปิดระบบสมัครสมาชิก (รวม Google OAuth สมัครใหม่)
+  authToggleMessage: '',                                       // ข้อความแสดงเมื่อ login/register ปิด
   disableTracking: false,                                      // ปิดการบันทึก lastSeenAt/loginLog ชั่วคราว (ลดภาระ disk write)
   hiddenBooks: {},                                            // bookId → { hiddenBy, hiddenAt, reason, bookName }
   loginLog: [],                                               // [{ username, loginAt, logoutAt, durationMs }] max 1000
@@ -472,6 +476,11 @@ async function handleApi(req, res, pathname, query) {
       },
       announcement: { enabled: !!an.enabled, text: an.text || '', color: an.color || 'blue' },
       maintenance: { enabled: !!mt.enabled, message: mt.message || '' },
+      authToggle: {
+        loginDisabled: !!data.loginDisabled,
+        registerDisabled: !!data.registerDisabled,
+        message: data.authToggleMessage || '',
+      },
       hiddenBooks: Object.keys(data.hiddenBooks || {}),
       trackingDisabled: !!data.disableTracking,
     });
@@ -481,6 +490,7 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'POST' && pathname === '/api/auth/register') {
     const body = await readBody(req);
     const { username, password } = body;
+    if (data.registerDisabled) return badRequest(res, 'ระบบสมัครสมาชิกปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง'));
     if (!username || !password) return badRequest(res, 'ต้องมี username และ password');
     if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) return badRequest(res, 'username: a-z 0-9 _ ยาว 3-20');
     if (password.length < 3) return badRequest(res, 'password สั้นเกินไป');
@@ -499,6 +509,7 @@ async function handleApi(req, res, pathname, query) {
     if (!username || !password) return badRequest(res, 'ต้องมี username และ password');
     const u = data.users[username];
     if (!u || u.password !== password) return unauthorized(res, 'username หรือ password ผิด');
+    if (data.loginDisabled && u.role !== 'admin') return badRequest(res, 'ระบบ login ปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง'));
     const token = randomToken();
     const nowIso = new Date().toISOString();
     data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
@@ -551,6 +562,7 @@ async function handleApi(req, res, pathname, query) {
       // หา user เดิมที่ผูก email นี้ ถ้าไม่มีก็สร้างใหม่
       let username = Object.keys(data.users).find(name => data.users[name].googleEmail === profile.email);
       if (!username) {
+        if (data.registerDisabled) { res.writeHead(403); return res.end('ระบบสมัครสมาชิกปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง')); }
         // ใช้ email prefix เป็น username (sanitize)
         let base = profile.email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 16) || 'user';
         username = base;
@@ -561,6 +573,8 @@ async function handleApi(req, res, pathname, query) {
           role: 'user', coins: 0, unlocked: [], inbox: [], created: new Date().toISOString().slice(0, 10),
           googleEmail: profile.email, googleName: profile.name || '',
         };
+      } else if (data.loginDisabled && data.users[username].role !== 'admin') {
+        res.writeHead(403); return res.end('ระบบ login ปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง'));
       }
       const token = randomToken();
       const nowIso = new Date().toISOString();
@@ -662,14 +676,52 @@ async function handleApi(req, res, pathname, query) {
     if (!code) return badRequest(res, 'ต้องมี code');
     const g = data.giftcards[code];
     if (!g) return badRequest(res, 'โค้ดไม่ถูกต้อง');
-    if (g.used) return badRequest(res, 'โค้ดถูกใช้แล้ว');
+    const maxUses = Number.isFinite(g.maxUses) && g.maxUses > 0 ? g.maxUses : 1;
+    g.uses = Array.isArray(g.uses) ? g.uses : [];
+    // Backward compat: ถ้า code เก่ามี used=true แต่ไม่มี uses array → migrate
+    if (g.used && g.uses.length === 0 && g.usedBy) {
+      g.uses.push({ username: g.usedBy, at: g.usedAt || new Date().toISOString() });
+    }
+    if (g.uses.length >= maxUses) return badRequest(res, 'โค้ดถูกใช้ครบจำนวนแล้ว');
+    if (g.uses.find(x => x.username === user.username)) return badRequest(res, 'คุณใช้โค้ดนี้แล้ว');
     const u = data.users[user.username];
-    u.coins = (u.coins || 0) + g.coins;
-    g.used = true;
-    g.usedBy = user.username;
-    g.usedAt = new Date().toISOString();
+    const type = g.type || 'coin';
+    const recordUse = () => {
+      g.uses.push({ username: user.username, at: new Date().toISOString() });
+      if (g.uses.length >= maxUses) {
+        g.used = true;
+        g.usedBy = user.username;
+        g.usedAt = new Date().toISOString();
+      }
+    };
+    if (type === 'vip') {
+      const days = Number(g.vipDays || 0);
+      if (!days || days <= 0) return badRequest(res, 'Gift card VIP ไม่มีจำนวนวัน');
+      const now = Date.now();
+      const base = (u.role === 'vip' && u.vipExpires && u.vipExpires > now) ? u.vipExpires : now;
+      u.vipExpires = base + days * 24 * 60 * 60 * 1000;
+      if (u.role !== 'admin') u.role = 'vip';
+      data.vipHistory = data.vipHistory || [];
+      data.vipHistory.push({
+        username: user.username, packageId: 'giftcard:' + code, packageLabel: `Gift Card VIP ${days} วัน`,
+        days, coinsPaid: 0,
+        at: new Date().toISOString(), vipExpiresAfter: u.vipExpires,
+      });
+      if (data.vipHistory.length > 2000) data.vipHistory = data.vipHistory.slice(-2000);
+      sendInbox(data, user.username, {
+        from: 'system',
+        subject: `🎉 แลก Gift Card VIP ${days} วัน สำเร็จ`,
+        body: `คุณแลกโค้ด "${code}" ได้ VIP ${days} วัน\nVIP หมดอายุ: ${new Date(u.vipExpires).toLocaleString('th-TH')}\n\nขอบคุณที่สนับสนุน ${process.env.APP_NAME || 'MKW Movies'}`,
+      });
+      recordUse();
+      await writeData(data);
+      return json(res, 200, { ok: true, type: 'vip', daysAdded: days, vipExpires: u.vipExpires, role: u.role });
+    }
+    // default: coin
+    u.coins = (u.coins || 0) + (g.coins || 0);
+    recordUse();
     await writeData(data);
-    return json(res, 200, { ok: true, coinsAdded: g.coins, newBalance: u.coins });
+    return json(res, 200, { ok: true, type: 'coin', coinsAdded: g.coins, newBalance: u.coins });
   }
 
   if (req.method === 'GET' && pathname === '/api/topup/packages') {
@@ -864,6 +916,28 @@ async function handleApi(req, res, pathname, query) {
     return json(res, 200, { history: data.users[target].history || [] });
   }
 
+  // Admin ดูประวัติเติมเงิน + VIP + สลิปของ user รายคน
+  const mUserPurchase = pathname.match(/^\/api\/admin\/user\/([^/]+)\/purchase-history$/);
+  if (mUserPurchase && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const target = decodeURIComponent(mUserPurchase[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    const topups = (data.topupHistory || []).filter(t => t.username === target);
+    const vip = (data.vipHistory || []).filter(v => v.username === target);
+    const slips = (data.slipPending || []).filter(s => s.username === target)
+      .map(s => ({ id: s.id, amount: s.amount, note: s.note || '', status: s.status, uploadedAt: s.uploadedAt, approvedAt: s.approvedAt || null, rejectReason: s.rejectReason || '' }));
+    return json(res, 200, { topups, vip, slips });
+  }
+
+  // Admin ดูจดหมายทั้งหมดของ user (รวมที่ user ลบไปแล้ว — soft-delete)
+  const mUserInbox = pathname.match(/^\/api\/admin\/user\/([^/]+)\/inbox$/);
+  if (mUserInbox && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const target = decodeURIComponent(mUserInbox[1]);
+    if (!data.users[target]) return notFound(res, 'ไม่พบ user');
+    return json(res, 200, { messages: data.users[target].inbox || [] });
+  }
+
   // ===== Hidden books (ซ่อนทั้งเรื่อง) =====
   if (pathname === '/api/admin/hidden-books' && req.method === 'GET') {
     if (!requireAdmin()) return;
@@ -942,6 +1016,30 @@ async function handleApi(req, res, pathname, query) {
     data.disableTracking = !!body.disableTracking;
     await writeData(data);
     return json(res, 200, { ok: true, disableTracking: data.disableTracking });
+  }
+
+  // ===== Auth toggle (ปิด login/register ชั่วคราว — admin ยัง login ได้) =====
+  if (pathname === '/api/admin/auth-toggle' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, {
+      loginDisabled: !!data.loginDisabled,
+      registerDisabled: !!data.registerDisabled,
+      message: data.authToggleMessage || '',
+    });
+  }
+  if (pathname === '/api/admin/auth-toggle' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    data.loginDisabled = !!body.loginDisabled;
+    data.registerDisabled = !!body.registerDisabled;
+    data.authToggleMessage = String(body.message || '').slice(0, 500);
+    await writeData(data);
+    return json(res, 200, {
+      ok: true,
+      loginDisabled: data.loginDisabled,
+      registerDisabled: data.registerDisabled,
+      message: data.authToggleMessage,
+    });
   }
 
   // ===== Login log (active sessions + historical) =====
@@ -1050,11 +1148,23 @@ async function handleApi(req, res, pathname, query) {
   if (pathname === '/api/admin/giftcards' && req.method === 'POST') {
     if (!requireAdmin()) return;
     const body = await readBody(req);
-    let { code, coins } = body;
-    coins = parseInt(coins, 10);
-    if (!code || !coins || coins <= 0) return badRequest(res, 'ต้องมี code และ coins > 0');
+    let { code, coins, type, vipDays, maxUses } = body;
+    code = String(code || '').trim().toUpperCase();
+    type = (type === 'vip') ? 'vip' : 'coin';
+    if (!code) return badRequest(res, 'ต้องมี code');
     if (data.giftcards[code]) return badRequest(res, 'code นี้มีอยู่แล้ว');
-    data.giftcards[code] = { coins, used: false, usedBy: null, createdBy: user.username, createdAt: new Date().toISOString() };
+    maxUses = parseInt(maxUses, 10);
+    if (!Number.isFinite(maxUses) || maxUses < 1 || maxUses > 999) maxUses = 1;
+    const baseFields = { maxUses, uses: [], used: false, usedBy: null, createdBy: user.username, createdAt: new Date().toISOString() };
+    if (type === 'vip') {
+      vipDays = parseInt(vipDays, 10);
+      if (!vipDays || vipDays <= 0 || vipDays > 3650) return badRequest(res, 'vipDays ต้อง 1-3650');
+      data.giftcards[code] = { type: 'vip', vipDays, ...baseFields };
+    } else {
+      coins = parseInt(coins, 10);
+      if (!coins || coins <= 0) return badRequest(res, 'ต้องมี coins > 0');
+      data.giftcards[code] = { type: 'coin', coins, ...baseFields };
+    }
     await writeData(data);
     return json(res, 200, { ok: true });
   }
@@ -1196,7 +1306,7 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/user/inbox') {
     if (!user) return unauthorized(res);
     const u = data.users[user.username];
-    const messages = u.inbox || [];
+    const messages = (u.inbox || []).filter(m => !m.deletedAt);
     const unread = messages.filter(m => !m.read).length;
     return json(res, 200, { messages, unread });
   }
@@ -1204,18 +1314,20 @@ async function handleApi(req, res, pathname, query) {
   if (req.method === 'GET' && pathname === '/api/user/inbox/unread') {
     if (!user) return json(res, 200, { unread: 0 });
     const inbox = data.users[user.username]?.inbox || [];
-    return json(res, 200, { unread: inbox.filter(m => !m.read).length });
+    return json(res, 200, { unread: inbox.filter(m => !m.read && !m.deletedAt).length });
   }
   if (req.method === 'POST' && pathname === '/api/user/inbox/read-all') {
     if (!user) return unauthorized(res);
     const u = data.users[user.username];
-    (u.inbox || []).forEach(m => { m.read = true; });
+    (u.inbox || []).forEach(m => { if (!m.deletedAt) m.read = true; });
     await writeData(data);
     return json(res, 200, { ok: true });
   }
   if (req.method === 'DELETE' && pathname === '/api/user/inbox') {
     if (!user) return unauthorized(res);
-    data.users[user.username].inbox = [];
+    const u = data.users[user.username];
+    const nowIso = new Date().toISOString();
+    (u.inbox || []).forEach(m => { if (!m.deletedAt) m.deletedAt = nowIso; });
     await writeData(data);
     return json(res, 200, { ok: true });
   }
@@ -1234,9 +1346,32 @@ async function handleApi(req, res, pathname, query) {
     if (!user) return unauthorized(res);
     const id = decodeURIComponent(mInboxDel[1]);
     const u = data.users[user.username];
-    const before = (u.inbox || []).length;
-    u.inbox = (u.inbox || []).filter(m => m.id !== id);
-    if (u.inbox.length === before) return notFound(res);
+    const msg = (u.inbox || []).find(m => m.id === id);
+    if (!msg) return notFound(res);
+    if (!msg.deletedAt) msg.deletedAt = new Date().toISOString();
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  // ===== User → Admin message (รายงานปัญหา / ติดต่อ admin) =====
+  if (req.method === 'POST' && pathname === '/api/user/send-to-admin') {
+    if (!user) return unauthorized(res);
+    const rl = rateLimit(`msg:${user.username}`, 5, 5 * 60 * 1000);
+    if (!rl.ok) return badRequest(res, `ส่งถี่เกินไป ลองใหม่ใน ${rl.retryAfterSec} วินาที`);
+    const body = await readBody(req);
+    const subject = String(body.subject || '').trim().slice(0, 200);
+    const text = String(body.body || '').trim().slice(0, 3000);
+    if (!subject && !text) return badRequest(res, 'ต้องมี subject หรือ body');
+    data.adminInbox = data.adminInbox || [];
+    data.adminInbox.unshift({
+      id: crypto.randomBytes(6).toString('hex'),
+      fromUsername: user.username,
+      fromIp: clientIp(req),
+      subject, body: text,
+      at: new Date().toISOString(),
+      read: false,
+    });
+    if (data.adminInbox.length > 500) data.adminInbox = data.adminInbox.slice(0, 500);
     await writeData(data);
     return json(res, 200, { ok: true });
   }
@@ -1271,6 +1406,40 @@ async function handleApi(req, res, pathname, query) {
     sendInbox(data, to, msg);
     await writeData(data);
     return json(res, 200, { ok: true, sentTo: 1, broadcast: false });
+  }
+
+  // ===== Admin: ข้อความจาก user (adminInbox) =====
+  if (req.method === 'GET' && pathname === '/api/admin/user-messages') {
+    if (!requireAdmin()) return;
+    const messages = data.adminInbox || [];
+    const unread = messages.filter(m => !m.read).length;
+    return json(res, 200, { messages, unread });
+  }
+  if (req.method === 'DELETE' && pathname === '/api/admin/user-messages') {
+    if (!requireAdmin()) return;
+    data.adminInbox = [];
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  const mAdmMsgRead = pathname.match(/^\/api\/admin\/user-messages\/([^/]+)\/read$/);
+  if (mAdmMsgRead && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const id = decodeURIComponent(mAdmMsgRead[1]);
+    const msg = (data.adminInbox || []).find(m => m.id === id);
+    if (!msg) return notFound(res);
+    msg.read = true;
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  const mAdmMsgDel = pathname.match(/^\/api\/admin\/user-messages\/([^/]+)$/);
+  if (mAdmMsgDel && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const id = decodeURIComponent(mAdmMsgDel[1]);
+    const before = (data.adminInbox || []).length;
+    data.adminInbox = (data.adminInbox || []).filter(m => m.id !== id);
+    if (data.adminInbox.length === before) return notFound(res);
+    await writeData(data);
+    return json(res, 200, { ok: true });
   }
 
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);
