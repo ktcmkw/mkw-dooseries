@@ -3,9 +3,9 @@
 // API: seriesjeen (via /proxy/api/platform/<source>/*) + local backend (/api/*)
 // ============================================================
 
-const API_SOURCES = ['dramabox', 'melolo'];
-const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo' };
-const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500' };
+const API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave'];
+const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave' };
+const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500', shortmax: 'bg-blue-600', dramawave: 'bg-purple-600' };
 const PAGE_SIZE = 40;
 const BRAND = 'MKW Movies';
 
@@ -137,6 +137,90 @@ const SOURCE_ADAPTERS = {
     },
     fetchVideoUrl: async (bookId, ep) => {
       const v = await apiGet(`/video?id=${encodeURIComponent(bookId)}&ep=${ep}`, 'melolo');
+      const list = Array.isArray(v.qualityList) ? v.qualityList : [];
+      const q1080 = list.find(x => x.label === '1080p')?.url || '';
+      const q720 = list.find(x => x.label === '720p')?.url || '';
+      const q540 = list.find(x => x.label === '540p')?.url || '';
+      return {
+        videoUrl: v.videoUrl || q1080 || q720 || q540 || '',
+        '1080p': q1080,
+        '720p': q720,
+        '540p': q540,
+        locked: !!v.locked,
+      };
+    },
+  },
+  // ShortMax — 2-fetch pattern เหมือน DramaBox แต่ path style เป็น /detail/{id}, /alleps/{id}
+  shortmax: {
+    detailPath: id => `/detail/${encodeURIComponent(id)}`,
+    episodesPath: id => `/alleps/${encodeURIComponent(id)}`,
+    normalizeDetail: r => {
+      if (!r) return null;
+      return {
+        bookId: String(r.bookId || r.id || ''),
+        bookName: r.bookName || r.title || '(ไม่ทราบชื่อ)',
+        coverWap: r.coverWap || r.cover || '',
+        cover: r.cover || r.coverWap || '',
+        chapterCount: r.chapterCount || (typeof r.episodes === 'number' ? r.episodes : 0) || 0,
+        introduction: r.introduction || r.intro || '',
+        tagV3s: r.tagV3s || [],
+        playCount: r.playCount || '',
+        shelfTime: r.shelfTime || '',
+        corner: r.corner || null,
+      };
+    },
+    normalizeEpisodes: r => {
+      if (Array.isArray(r)) return r;
+      if (Array.isArray(r?.episodes)) return r.episodes;
+      // Fallback ถ้า response เป็น Melolo-style videos array
+      if (Array.isArray(r?.videos)) {
+        return r.videos.map(v => ({
+          chapterIndex: Number(v.chapterIndex || v.episode || v.ep || 0),
+          isCharge: !!v.isCharge,
+          videoUrl: v.videoUrl || '',
+          '1080p': v['1080p'] || '',
+          '540p': v['540p'] || '',
+        }));
+      }
+      return [];
+    },
+    extractEpisodesFromDetail: () => null,
+    fetchVideoUrl: null,  // คาดว่า /alleps คืน URL พร้อมใน response
+  },
+  // DramaWave — single-fetch + lazy URL pattern เหมือน Melolo
+  dramawave: {
+    detailPath: id => `/drama/${encodeURIComponent(id)}`,
+    episodesPath: null,
+    normalizeDetail: r => {
+      if (!r) return null;
+      return {
+        bookId: String(r.bookId || r.id || ''),
+        bookName: r.bookName || r.title || '(ไม่ทราบชื่อ)',
+        coverWap: r.coverWap || r.cover || '',
+        cover: r.cover || r.coverWap || '',
+        chapterCount: typeof r.episodes === 'number' ? r.episodes : (r.chapterCount || (Array.isArray(r.videos) ? r.videos.length : 0)) || 0,
+        introduction: r.introduction || r.intro || '',
+        tagV3s: r.tagV3s || [],
+        playCount: r.playCount || '',
+        shelfTime: r.shelfTime || '',
+        corner: r.corner || null,
+      };
+    },
+    normalizeEpisodes: () => [],
+    extractEpisodesFromDetail: r => {
+      const videos = Array.isArray(r?.videos) ? r.videos : [];
+      return videos.map(v => ({
+        chapterIndex: Number(v.episode || v.ep || v.chapterIndex || 0),
+        isCharge: !!v.isCharge,
+        videoUrl: '',
+        '1080p': '',
+        '540p': '',
+        _vid: v.vid,
+        _duration: v.duration,
+      })).sort((a, b) => a.chapterIndex - b.chapterIndex);
+    },
+    fetchVideoUrl: async (bookId, ep) => {
+      const v = await apiGet(`/video?id=${encodeURIComponent(bookId)}&ep=${ep}`, 'dramawave');
       const list = Array.isArray(v.qualityList) ? v.qualityList : [];
       const q1080 = list.find(x => x.label === '1080p')?.url || '';
       const q720 = list.find(x => x.label === '720p')?.url || '';
@@ -544,9 +628,11 @@ function attachHeaderEvents() {
 function renderSourceSwitcherInline() {
   const cur = getSource();
   const opts = [
-    { key: 'all',      label: 'ทั้งหมด' },
-    { key: 'dramabox', label: SOURCE_LABELS.dramabox },
-    { key: 'melolo',   label: SOURCE_LABELS.melolo },
+    { key: 'all',       label: 'ทั้งหมด' },
+    { key: 'dramabox',  label: SOURCE_LABELS.dramabox },
+    { key: 'melolo',    label: SOURCE_LABELS.melolo },
+    { key: 'shortmax',  label: SOURCE_LABELS.shortmax },
+    { key: 'dramawave', label: SOURCE_LABELS.dramawave },
   ];
   return `
     <div class="source-switcher inline-flex items-center gap-1.5 flex-wrap">
@@ -779,20 +865,22 @@ async function initHomePage() {
   // Per-source endpoint mapping — Melolo /search ไม่รองรับ keyword Thai + ไม่มี genre → ใช้ /list + client filter
   const dList = p => `/list?page=${p}&page_size=${size}`;
   const dThaiKeyword = encodeURIComponent('พากย์ไทย');
-  const meloloThaiFilter = it => /\(พากย์\)|พากย์ไทย/.test(it.title || '');
+  const thaiTitleFilter = it => /\(พากย์\)|พากย์ไทย/.test(it.title || it.bookName || '');
   const filters = [
     { key: 'all',    label: 'ทั้งหมด',
-      spec: p => ({ dramabox: dList(p), melolo: dList(p) }) },
+      spec: p => ({ dramabox: dList(p), melolo: dList(p), shortmax: dList(p), dramawave: dList(p) }) },
     { key: 'thai',   label: 'พากย์ไทย',
       spec: p => ({
         dramabox: `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`,
         melolo: dList(p),
-        filter: { melolo: meloloThaiFilter },
+        shortmax: dList(p),
+        dramawave: dList(p),
+        filter: { melolo: thaiTitleFilter, shortmax: thaiTitleFilter, dramawave: thaiTitleFilter },
       }) },
     { key: 'anime',  label: 'การ์ตูน',
-      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null }) },
+      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null }) },
     { key: 'vip',    label: 'VIP',
-      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null }) },
+      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null }) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 
@@ -866,11 +954,15 @@ async function doSearch(q) {
   try {
     // DramaBox: /search?keyword=Q (รองรับ Thai)
     // Melolo: /search ไม่รับ Thai → ใช้ /list + client filter ที่ title.includes(Q)
+    // ShortMax / DramaWave: ใช้ /search?keyword= ตาม spec — ถ้าไม่รับ Thai ก็จะคืน 0 รายการ (ไม่เป็นไร, source อื่นยังตอบ)
     const qLower = q.toLowerCase();
+    const qEnc = encodeURIComponent(q);
     const res = await apiGetList({
-      dramabox: `/search?keyword=${encodeURIComponent(q)}&page=1&page_size=${PAGE_SIZE}`,
+      dramabox: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
       melolo: `/list?page=1&page_size=${PAGE_SIZE}`,
-      filter: { melolo: it => String(it.title || '').toLowerCase().includes(qLower) },
+      shortmax: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
+      dramawave: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
+      filter: { melolo: it => String(it.title || it.bookName || '').toLowerCase().includes(qLower) },
     });
     const list = pickList(res);
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
