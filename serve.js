@@ -75,6 +75,8 @@ const DEFAULT_DATA = {
   registerSettings: { maxPerIp: 3, banHours: 24 },             // จำกัดสมัครต่อ IP
   registerIpLog: {},                                          // ip → { count, firstAt }
   bannedIps: {},                                              // ip → { until, reason }
+  pointsConfig: { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 },  // 100 point = 1 coin
+  sessionClosures: {},                                        // token → { reason, at } (TTL 24h) เก็บไว้แจ้งฝั่ง client ที่ถูกเตะ
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -148,7 +150,11 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 function badRequest(res, msg) { json(res, 400, { error: msg }); }
-function unauthorized(res, msg = 'ต้อง login ก่อน') { json(res, 401, { error: msg }); }
+function unauthorized(res, msg = 'ต้อง login ก่อน', reason) {
+  const body = { error: msg };
+  if (reason) body.reason = reason;
+  json(res, 401, body);
+}
 function forbidden(res, msg = 'ไม่มีสิทธิ์') { json(res, 403, { error: msg }); }
 function notFound(res, msg = 'ไม่พบ') { json(res, 404, { error: msg }); }
 
@@ -193,8 +199,14 @@ async function getAuthUser(req, data) {
   const auth = req.headers['authorization'] || '';
   const m = auth.match(/^Bearer\s+(\S+)$/);
   if (!m) return null;
-  const sess = data.sessions[m[1]];
-  if (!sess) return null;
+  const tok = m[1];
+  const sess = data.sessions[tok];
+  if (!sess) {
+    // ตรวจว่าเคยถูกเตะออกจาก single-device enforcement ไหม (เก็บใน sessionClosures TTL 24h)
+    const closure = data.sessionClosures?.[tok];
+    if (closure) req._closureReason = closure.reason || 'session_closed';
+    return null;
+  }
   // Backwards compat: session อาจเป็น string (username) หรือ object {username, loginAt, lastSeenAt}
   const username = typeof sess === 'string' ? sess : sess.username;
   const u = data.users[username];
@@ -210,6 +222,28 @@ async function getAuthUser(req, data) {
   }
   await checkVipExpiry(u, data);
   return { username, ...u };
+}
+
+// Single-device enforcement — ปิด session อื่นทั้งหมดของ user นี้ (ยกเว้น keepToken)
+// เก็บใน sessionClosures เพื่อบอกฝั่ง client ที่ถูกเตะว่าโดน replace
+function kickOtherSessionsOfUser(data, username, keepToken) {
+  data.sessionClosures = data.sessionClosures || {};
+  const nowIso = new Date().toISOString();
+  let count = 0;
+  for (const [tok, sess] of Object.entries(data.sessions)) {
+    const uname = typeof sess === 'string' ? sess : sess.username;
+    if (uname !== username) continue;
+    if (tok === keepToken) continue;
+    closeSession(data, tok, 'session_replaced');
+    data.sessionClosures[tok] = { reason: 'session_replaced', at: nowIso };
+    count++;
+  }
+  // GC — ลบ closures ที่เก่ากว่า 24h
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  for (const [tok, c] of Object.entries(data.sessionClosures)) {
+    if (new Date(c.at).getTime() < cutoff) delete data.sessionClosures[tok];
+  }
+  return count;
 }
 
 // ปิด session + push ไป loginLog (keep ≤ 1000 records)
@@ -234,10 +268,11 @@ function closeSession(data, token, reason) {
   delete data.sessions[token];
 }
 
-function publicUser(u) {
+function publicUser(u, data) {
   if (!u) return null;
   const today = getBangkokDate();
   const pd = u.pointsDaily || { date: '', earned: 0 };
+  const pc = data ? getPointsConfig(data) : { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 };
   return {
     username: u.username,
     role: u.role,
@@ -247,7 +282,18 @@ function publicUser(u) {
     vipExpires: u.vipExpires || null,
     points: u.points || 0,
     pointsToday: pd.date === today ? (pd.earned || 0) : 0,
-    pointsDailyCap: 10000,
+    pointsDailyCap: pc.dailyCap,
+    pointsPerMinute: pc.pointsPerMinute,
+    pointsRedeemRate: pc.redeemRate,
+  };
+}
+
+function getPointsConfig(data) {
+  const pc = data.pointsConfig || {};
+  return {
+    pointsPerMinute: Math.max(1, Math.min(1000, parseInt(pc.pointsPerMinute, 10) || 10)),
+    dailyCap: Math.max(0, Math.min(1000000, parseInt(pc.dailyCap, 10) || 10000)),
+    redeemRate: Math.max(1, Math.min(100000, parseInt(pc.redeemRate, 10) || 100)),
   };
 }
 
@@ -525,6 +571,11 @@ async function handleApi(req, res, pathname, query) {
   const user = await getAuthUser(req, data);
   const ip = clientIp(req);
 
+  // Single-device: token ของ user นี้ถูกเตะเพราะ login จากเครื่องอื่น → แจ้ง client ให้ logout + เด้ง alert
+  if (!user && req._closureReason === 'session_replaced') {
+    return unauthorized(res, 'พบการ login จากเครื่องอื่น — คุณถูก logout จากเครื่องนี้', 'session_replaced');
+  }
+
   // IP ban — ปิดเว็บทั้งหมด ยกเว้น admin (login ผ่าน session เดิมได้)
   const ban = isIpBanned(data, ip);
   if (ban && user?.role !== 'admin') {
@@ -581,9 +632,10 @@ async function handleApi(req, res, pathname, query) {
     deliverWelcomeGift(data, username);
     const token = randomToken();
     const nowIso = new Date().toISOString();
+    kickOtherSessionsOfUser(data, username, token);
     data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
     await writeData(data);
-    return json(res, 200, { token, user: publicUser({ username, ...data.users[username] }), warning: ipTrack.warning || null });
+    return json(res, 200, { token, user: publicUser({ username, ...data.users[username] }, data), warning: ipTrack.warning || null });
   }
 
   if (req.method === 'POST' && pathname === '/api/auth/login') {
@@ -595,9 +647,10 @@ async function handleApi(req, res, pathname, query) {
     if (data.loginDisabled && u.role !== 'admin') return badRequest(res, 'ระบบ login ปิดชั่วคราว — ' + (data.authToggleMessage || 'กรุณากลับมาภายหลัง'));
     const token = randomToken();
     const nowIso = new Date().toISOString();
+    kickOtherSessionsOfUser(data, username, token);
     data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
     await writeData(data);
-    return json(res, 200, { token, user: publicUser({ username, ...u }) });
+    return json(res, 200, { token, user: publicUser({ username, ...u }, data) });
   }
 
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
@@ -669,6 +722,7 @@ async function handleApi(req, res, pathname, query) {
       }
       const token = randomToken();
       const nowIso = new Date().toISOString();
+      kickOtherSessionsOfUser(data, username, token);
       data.sessions[token] = { username, loginAt: nowIso, lastSeenAt: nowIso };
       await writeData(data);
       // ส่ง HTML ที่ set token ใน localStorage แล้วเด้งกลับหน้าแรก
@@ -681,7 +735,7 @@ async function handleApi(req, res, pathname, query) {
 
   if (req.method === 'GET' && pathname === '/api/auth/me') {
     if (!user) return unauthorized(res);
-    return json(res, 200, { user: publicUser(user) });
+    return json(res, 200, { user: publicUser(user, data) });
   }
 
   if (req.method === 'POST' && pathname === '/api/user/change-password') {
@@ -703,7 +757,7 @@ async function handleApi(req, res, pathname, query) {
     return json(res, 200, { ok: true });
   }
 
-  // ===== Online Points (เก็บพ้อยจากการดูวิดีโอ: 1 นาที = 10 พ้อย, วันละ 10000) =====
+  // ===== Online Points (เก็บพ้อยจากการดูวิดีโอ — ตั้งค่าใน admin panel) =====
   if (req.method === 'POST' && pathname === '/api/user/points/tick') {
     if (!user) return unauthorized(res);
     const body = await readBody(req);
@@ -712,17 +766,17 @@ async function handleApi(req, res, pathname, query) {
     const u = data.users[user.username];
     u.points = u.points || 0;
     if (!u.pointsDaily || u.pointsDaily.date !== today) u.pointsDaily = { date: today, earned: 0 };
-    const cap = 10000;
+    const pc = getPointsConfig(data);
     const minutes = Math.floor(seconds / 60);
-    const want = minutes * 10;
-    const room = Math.max(0, cap - u.pointsDaily.earned);
+    const want = minutes * pc.pointsPerMinute;
+    const room = Math.max(0, pc.dailyCap - u.pointsDaily.earned);
     const give = Math.min(room, want);
     if (give > 0) {
       u.points += give;
       u.pointsDaily.earned += give;
       await writeData(data);
     }
-    return json(res, 200, { points: u.points, pointsToday: u.pointsDaily.earned, cap, added: give });
+    return json(res, 200, { points: u.points, pointsToday: u.pointsDaily.earned, cap: pc.dailyCap, added: give });
   }
 
   if (req.method === 'POST' && pathname === '/api/user/redeem-points') {
@@ -731,9 +785,11 @@ async function handleApi(req, res, pathname, query) {
     const want = parseInt(body.points || 0, 10) || 0;
     const u = data.users[user.username];
     u.points = u.points || 0;
-    const usable = Math.floor(Math.min(u.points, want) / 100) * 100;
-    if (usable < 100) return badRequest(res, 'ต้องแลกอย่างน้อย 100 Point (มี ' + u.points + ' Point)');
-    const coinsAdded = usable / 100;
+    const pc = getPointsConfig(data);
+    const rate = pc.redeemRate;
+    const usable = Math.floor(Math.min(u.points, want) / rate) * rate;
+    if (usable < rate) return badRequest(res, `ต้องแลกอย่างน้อย ${rate} Point (มี ${u.points} Point)`);
+    const coinsAdded = usable / rate;
     u.points -= usable;
     u.coins = (u.coins || 0) + coinsAdded;
     await writeData(data);
@@ -1671,6 +1727,79 @@ async function handleApi(req, res, pathname, query) {
     if (!removed) return notFound(res);
     await writeData(data);
     return json(res, 200, { ok: true });
+  }
+
+  // ===== Admin: Points config (pointsPerMinute, dailyCap, redeemRate) =====
+  if (pathname === '/api/admin/points-config' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { pointsConfig: getPointsConfig(data) });
+  }
+  if (pathname === '/api/admin/points-config' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    data.pointsConfig = {
+      pointsPerMinute: Math.max(1, Math.min(1000, parseInt(body.pointsPerMinute, 10) || 10)),
+      dailyCap: Math.max(0, Math.min(1000000, parseInt(body.dailyCap, 10) || 10000)),
+      redeemRate: Math.max(1, Math.min(100000, parseInt(body.redeemRate, 10) || 100)),
+    };
+    await writeData(data);
+    return json(res, 200, { ok: true, pointsConfig: data.pointsConfig });
+  }
+
+  // ===== Admin: Topup packages CRUD =====
+  if (pathname === '/api/admin/topup-packages' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { packages: data.topupPackages || [] });
+  }
+  if (pathname === '/api/admin/topup-packages' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const list = Array.isArray(body.packages) ? body.packages : null;
+    if (!list) return badRequest(res, 'ต้องส่ง packages เป็น array');
+    const cleaned = [];
+    for (const p of list) {
+      const id = String(p.id || '').trim().slice(0, 50);
+      const coins = parseInt(p.coins, 10);
+      const price = parseInt(p.price, 10);
+      const label = String(p.label || '').slice(0, 100);
+      if (!id) return badRequest(res, 'ทุก package ต้องมี id');
+      if (!Number.isFinite(coins) || coins <= 0) return badRequest(res, `package "${id}": coins ต้อง > 0`);
+      if (!Number.isFinite(price) || price <= 0) return badRequest(res, `package "${id}": price ต้อง > 0`);
+      cleaned.push({ id, coins, price, label });
+    }
+    const ids = cleaned.map(p => p.id);
+    if (new Set(ids).size !== ids.length) return badRequest(res, 'id ห้ามซ้ำ');
+    data.topupPackages = cleaned;
+    await writeData(data);
+    return json(res, 200, { ok: true, packages: data.topupPackages });
+  }
+
+  // ===== Admin: VIP packages CRUD =====
+  if (pathname === '/api/admin/vip-packages' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { packages: data.vipPackages || [] });
+  }
+  if (pathname === '/api/admin/vip-packages' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const list = Array.isArray(body.packages) ? body.packages : null;
+    if (!list) return badRequest(res, 'ต้องส่ง packages เป็น array');
+    const cleaned = [];
+    for (const p of list) {
+      const id = String(p.id || '').trim().slice(0, 50);
+      const days = parseInt(p.days, 10);
+      const coins = parseInt(p.coins, 10);
+      const label = String(p.label || '').slice(0, 100);
+      if (!id) return badRequest(res, 'ทุก package ต้องมี id');
+      if (!Number.isFinite(days) || days <= 0) return badRequest(res, `package "${id}": days ต้อง > 0`);
+      if (!Number.isFinite(coins) || coins <= 0) return badRequest(res, `package "${id}": coins ต้อง > 0`);
+      cleaned.push({ id, days, coins, label });
+    }
+    const ids = cleaned.map(p => p.id);
+    if (new Set(ids).size !== ids.length) return badRequest(res, 'id ห้ามซ้ำ');
+    data.vipPackages = cleaned;
+    await writeData(data);
+    return json(res, 200, { ok: true, packages: data.vipPackages });
   }
 
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);

@@ -32,6 +32,7 @@ async function initAdminPage() {
       <button data-tab="usermsg"   class="tab-btn px-4 py-2 text-sm rounded-t-lg">📥 ข้อความจาก user</button>
       <button data-tab="site"      class="tab-btn px-4 py-2 text-sm rounded-t-lg">🌐 ระบบ</button>
       <button data-tab="register"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📝 สมัครสมาชิก</button>
+      <button data-tab="points"    class="tab-btn px-4 py-2 text-sm rounded-t-lg">💎 Point & แพ็กเกจ</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
     </div>
     <div id="tabContent"></div>
@@ -67,6 +68,7 @@ async function loadTab(tab) {
     if (tab === 'usermsg')   return renderUserMessagesTab(c);
     if (tab === 'site')      return renderSiteTab(c);
     if (tab === 'register')  return renderRegisterTab(c);
+    if (tab === 'points')    return renderPointsTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
@@ -1474,4 +1476,203 @@ async function renderRegisterTab(c) {
       renderRegisterTab(c);
     } catch (ex) { alert('ไม่สำเร็จ: ' + ex.message); }
   });
+}
+
+// ---------- Points & Packages ----------
+async function renderPointsTab(c) {
+  const [pc, topup, vip] = await Promise.all([
+    backendGet('/api/admin/points-config'),
+    backendGet('/api/admin/topup-packages'),
+    backendGet('/api/admin/vip-packages'),
+  ]);
+  const cfg = pc.pointsConfig || { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 };
+  const topupPkgs = topup.packages || [];
+  const vipPkgs = vip.packages || [];
+
+  const topupRow = (p, i) => `
+    <tr data-idx="${i}" class="topup-row border-t border-zinc-800">
+      <td class="p-2"><input class="tp-id w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs font-mono" value="${escapeHtml(p.id || '')}" maxlength="50"/></td>
+      <td class="p-2"><input class="tp-coins w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs text-right" type="number" min="1" value="${p.coins || 0}"/></td>
+      <td class="p-2"><input class="tp-price w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs text-right" type="number" min="1" value="${p.price || 0}"/></td>
+      <td class="p-2"><input class="tp-label w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs" value="${escapeHtml(p.label || '')}" maxlength="100"/></td>
+      <td class="p-2 text-center"><button type="button" class="tp-del text-red-400 hover:text-red-300 text-lg leading-none">×</button></td>
+    </tr>`;
+  const vipRow = (p, i) => `
+    <tr data-idx="${i}" class="vip-row border-t border-zinc-800">
+      <td class="p-2"><input class="vp-id w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs font-mono" value="${escapeHtml(p.id || '')}" maxlength="50"/></td>
+      <td class="p-2"><input class="vp-days w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs text-right" type="number" min="1" value="${p.days || 0}"/></td>
+      <td class="p-2"><input class="vp-coins w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs text-right" type="number" min="1" value="${p.coins || 0}"/></td>
+      <td class="p-2"><input class="vp-label w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs" value="${escapeHtml(p.label || '')}" maxlength="100"/></td>
+      <td class="p-2 text-center"><button type="button" class="vp-del text-red-400 hover:text-red-300 text-lg leading-none">×</button></td>
+    </tr>`;
+
+  c.innerHTML = `
+    <div class="max-w-4xl space-y-4">
+
+      <!-- Points config -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">⭐ Online Point — ตั้งค่าระบบพ้อย</h3>
+        <p class="text-xs text-zinc-500 mb-4">พ้อยที่ได้จากการดูวิดีโอ (1 นาที = X พ้อย) — cap ต่อวัน — อัตราแลกเหรียญ</p>
+        <form id="pcForm" class="space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">⏱️ Point ต่อนาที</label>
+              <input id="pcPerMin" type="number" min="1" max="1000" value="${cfg.pointsPerMinute}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+              <div class="text-[10px] text-zinc-600 mt-1">ปัจจุบัน: 1 นาที = ${cfg.pointsPerMinute} point</div>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">📅 Cap ต่อวัน</label>
+              <input id="pcCap" type="number" min="0" max="1000000" value="${cfg.dailyCap}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+              <div class="text-[10px] text-zinc-600 mt-1">สูงสุด ${cfg.dailyCap.toLocaleString()} point/วัน</div>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400 mb-1 block">💱 Redeem rate (Point → 1 Coin)</label>
+              <input id="pcRate" type="number" min="1" max="100000" value="${cfg.redeemRate}" class="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-sm"/>
+              <div class="text-[10px] text-zinc-600 mt-1">${cfg.redeemRate} point = 1 MKW Coin</div>
+            </div>
+          </div>
+          <div id="pcStatus" class="text-sm hidden"></div>
+          <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-sm font-bold">💾 บันทึก</button>
+        </form>
+      </div>
+
+      <!-- Topup packages -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">💰 แพ็กเกจเติม MKW Coin</h3>
+        <p class="text-xs text-zinc-500 mb-4">user เห็นใน topup page — id ห้ามซ้ำ, coins = จำนวนเหรียญที่ได้, price = ราคาจ่ายเป็นบาท</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead class="bg-zinc-950 text-zinc-400">
+              <tr>
+                <th class="p-2 text-left w-24">ID</th>
+                <th class="p-2 text-right w-24">Coins ที่ได้</th>
+                <th class="p-2 text-right w-24">ราคา (บาท)</th>
+                <th class="p-2 text-left">Label</th>
+                <th class="p-2 text-center w-10"></th>
+              </tr>
+            </thead>
+            <tbody id="topupTable">
+              ${topupPkgs.map((p, i) => topupRow(p, i)).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="flex gap-2 flex-wrap mt-3">
+          <button type="button" id="topupAdd" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs rounded">+ เพิ่มแพ็กเกจ</button>
+          <button type="button" id="topupSave" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold">💾 บันทึกทั้งหมด</button>
+        </div>
+        <div id="topupStatus" class="text-xs mt-2 hidden"></div>
+      </div>
+
+      <!-- VIP packages -->
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+        <h3 class="font-bold mb-3">👑 แพ็กเกจ VIP (แลกด้วยเหรียญ)</h3>
+        <p class="text-xs text-zinc-500 mb-4">user ซื้อ VIP ด้วย MKW Coin — id ห้ามซ้ำ, days = จำนวนวัน, coins = ราคาเหรียญ</p>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead class="bg-zinc-950 text-zinc-400">
+              <tr>
+                <th class="p-2 text-left w-24">ID</th>
+                <th class="p-2 text-right w-20">Days</th>
+                <th class="p-2 text-right w-24">ราคา Coins</th>
+                <th class="p-2 text-left">Label</th>
+                <th class="p-2 text-center w-10"></th>
+              </tr>
+            </thead>
+            <tbody id="vipTable">
+              ${vipPkgs.map((p, i) => vipRow(p, i)).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="flex gap-2 flex-wrap mt-3">
+          <button type="button" id="vipAdd" class="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs rounded">+ เพิ่มแพ็กเกจ</button>
+          <button type="button" id="vipSave" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold">💾 บันทึกทั้งหมด</button>
+        </div>
+        <div id="vipStatus" class="text-xs mt-2 hidden"></div>
+      </div>
+
+    </div>
+  `;
+
+  // Points config save
+  $('#pcForm').onsubmit = async e => {
+    e.preventDefault();
+    const st = $('#pcStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    try {
+      await backendPost('/api/admin/points-config', {
+        pointsPerMinute: parseInt($('#pcPerMin').value, 10),
+        dailyCap: parseInt($('#pcCap').value, 10),
+        redeemRate: parseInt($('#pcRate').value, 10),
+      });
+      st.textContent = '✓ บันทึกสำเร็จ — ค่าใหม่มีผลทันที (user ต้อง refresh เพื่อเห็น cap ใหม่)';
+      st.classList.add('text-emerald-400');
+    } catch (ex) {
+      st.textContent = ex.message;
+      st.classList.add('text-red-400');
+    }
+  };
+
+  // Topup table
+  const bindTopupDel = () => {
+    $$('.tp-del').forEach(b => b.onclick = () => b.closest('tr').remove());
+  };
+  bindTopupDel();
+  $('#topupAdd').onclick = () => {
+    const idx = $$('.topup-row').length;
+    $('#topupTable').insertAdjacentHTML('beforeend', topupRow({ id: 'p' + (idx + 1), coins: 100, price: 100, label: '' }, idx));
+    bindTopupDel();
+  };
+  $('#topupSave').onclick = async () => {
+    const st = $('#topupStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    const packages = [];
+    for (const row of $$('.topup-row')) {
+      packages.push({
+        id: row.querySelector('.tp-id').value.trim(),
+        coins: parseInt(row.querySelector('.tp-coins').value, 10),
+        price: parseInt(row.querySelector('.tp-price').value, 10),
+        label: row.querySelector('.tp-label').value.trim(),
+      });
+    }
+    try {
+      await backendPost('/api/admin/topup-packages', { packages });
+      st.textContent = '✓ บันทึกสำเร็จ';
+      st.classList.add('text-emerald-400');
+    } catch (ex) {
+      st.textContent = ex.message;
+      st.classList.add('text-red-400');
+    }
+  };
+
+  // VIP table
+  const bindVipDel = () => {
+    $$('.vp-del').forEach(b => b.onclick = () => b.closest('tr').remove());
+  };
+  bindVipDel();
+  $('#vipAdd').onclick = () => {
+    const idx = $$('.vip-row').length;
+    $('#vipTable').insertAdjacentHTML('beforeend', vipRow({ id: 'vip' + (idx + 1), days: 7, coins: 500, label: '' }, idx));
+    bindVipDel();
+  };
+  $('#vipSave').onclick = async () => {
+    const st = $('#vipStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+    const packages = [];
+    for (const row of $$('.vip-row')) {
+      packages.push({
+        id: row.querySelector('.vp-id').value.trim(),
+        days: parseInt(row.querySelector('.vp-days').value, 10),
+        coins: parseInt(row.querySelector('.vp-coins').value, 10),
+        label: row.querySelector('.vp-label').value.trim(),
+      });
+    }
+    try {
+      await backendPost('/api/admin/vip-packages', { packages });
+      st.textContent = '✓ บันทึกสำเร็จ';
+      st.classList.add('text-emerald-400');
+    } catch (ex) {
+      st.textContent = ex.message;
+      st.classList.add('text-red-400');
+    }
+  };
 }

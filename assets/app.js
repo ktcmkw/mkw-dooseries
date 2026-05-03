@@ -163,11 +163,25 @@ const POINTS_POS_KEY = 'mkw_points_pos';
 const POINTS_HIDDEN_KEY = 'mkw_points_popup_hidden';
 
 function _pointsRemoveAll() {
-  document.getElementById('pointsPopup')?.remove();
-  document.getElementById('pointsMini')?.remove();
+  const popup = document.getElementById('pointsPopup');
+  const mini = document.getElementById('pointsMini');
+  if (popup) { _pointsCleanupFs(popup); popup.remove(); }
+  if (mini) { _pointsCleanupFs(mini); mini.remove(); }
+}
+function _pointsCleanupFs(el) {
+  if (!el?._moveOnFs) return;
+  document.removeEventListener('fullscreenchange', el._moveOnFs);
+  document.removeEventListener('webkitfullscreenchange', el._moveOnFs);
+  el._moveOnFs = null;
 }
 function _pointsKeepInFs(el) {
   const moveOnFs = () => {
+    // ถ้า element ถูก remove ไปแล้ว (เช่น zombie ที่ cleanup ไม่ทัน) — ข้ามและ cleanup listener ซะเลย
+    if (!el.isConnected && el.parentElement == null) {
+      document.removeEventListener('fullscreenchange', moveOnFs);
+      document.removeEventListener('webkitfullscreenchange', moveOnFs);
+      return;
+    }
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     const target = fsEl || document.body;
     if (el.parentElement !== target) target.appendChild(el);
@@ -245,7 +259,6 @@ function _enableDrag(el) {
 function showPointsCircle() {
   if (!auth.user) return;
   if (localStorage.getItem(POINTS_HIDDEN_KEY) === '1') return;
-  if (document.getElementById('pointsMini')) return;
   _pointsRemoveAll();
   const u = auth.user;
   const today = u.pointsToday || 0;
@@ -606,6 +619,17 @@ async function apiGetList(pathOrSpec) {
   return { items: merged, total, _multi: true, _buckets: buckets.map(b => ({ source: b.source, count: b.items.length, total: b.total || 0, err: b.err?.message || null, skipped: !!b.skipped })) };
 }
 
+let _sessionReplacedShown = false;
+function _handleSessionReplaced(data) {
+  if (_sessionReplacedShown) return;
+  _sessionReplacedShown = true;
+  try { localStorage.removeItem('mkw_token'); } catch {}
+  try { localStorage.removeItem('mkw_remember'); } catch {}
+  auth.user = null;
+  alert(data?.error || 'พบการ login จากเครื่องอื่น — คุณถูก logout จากเครื่องนี้');
+  location.href = '/login';
+}
+
 async function backendGet(path, opts = {}) {
   const { timeoutMs } = opts;
   const ctrl = timeoutMs ? new AbortController() : null;
@@ -614,6 +638,7 @@ async function backendGet(path, opts = {}) {
     const res = await fetch(path, { headers: auth.headers(), signal: ctrl?.signal });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status === 401 && data.reason === 'session_replaced') _handleSessionReplaced(data);
       if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
       const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
     }
@@ -634,6 +659,7 @@ async function backendPost(path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401 && data.reason === 'session_replaced') _handleSessionReplaced(data);
     if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
     const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; e.data = data; throw e;
   }
@@ -644,6 +670,7 @@ async function backendDelete(path) {
   const res = await fetch(path, { method: 'DELETE', headers: auth.headers() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (res.status === 401 && data.reason === 'session_replaced') _handleSessionReplaced(data);
     if (res.status === 403 && data.error === 'ip_banned') showIpBanned(data);
     const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e;
   }
