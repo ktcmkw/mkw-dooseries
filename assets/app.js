@@ -578,28 +578,25 @@ const SOURCE_ADAPTERS = {
     },
     fetchVideoUrl: null,  // URL ฝังใน detail response แล้ว
   },
-  // Netshort — /drama/{id} detail (คล้าย DramaWave) + /watch/{id}/{ep} แยก (คล้าย Melolo — lazy fetch)
-  // ถ้า detail ไม่มี items list → synthesize จาก episode_count ([1..N])
+  // Netshort — flat detail (ไม่มี data wrapper / ไม่มี items array)
+  // field map: shortPlayId, shortPlayName, shortPlayCover, totalEpisode, shotIntroduce, shortPlayLabels[]
+  // ใช้ /watch/{id}/{ep} แยก fetch URL ตอนเล่น (lazy เหมือน Melolo)
   netshort: {
     detailPath: id => `/drama/${encodeURIComponent(id)}`,
     episodesPath: null,
     normalizeDetail: r => {
       if (!r) return null;
       const d = r.data || r;
-      const items = Array.isArray(d.items) ? d.items
-                  : Array.isArray(d.episodes) ? d.episodes
-                  : Array.isArray(d.list) ? d.list
-                  : Array.isArray(d.videos) ? d.videos
-                  : Array.isArray(d.chapters) ? d.chapters : [];
-      const count = Number(d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? d.count ?? (typeof d.episodes === 'number' ? d.episodes : 0) ?? items.length) || items.length || 0;
+      const count = Number(d.totalEpisode ?? d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? 0) || 0;
+      const labels = Array.isArray(d.shortPlayLabels) ? d.shortPlayLabels : (Array.isArray(d.tags) ? d.tags : []);
       return {
-        bookId: String(d.bookId || d.id || d.series_id || ''),
-        bookName: d.title || d.name || d.bookName || items[0]?.name || '(ไม่ทราบชื่อ)',
-        coverWap: d.cover || d.coverWap || items[0]?.cover || '',
-        cover: d.cover || '',
+        bookId: String(d.shortPlayId || d.bookId || d.id || d.series_id || ''),
+        bookName: d.shortPlayName || d.title || d.name || d.bookName || '(ไม่ทราบชื่อ)',
+        coverWap: d.shortPlayCover || d.cover || d.coverWap || '',
+        cover: d.shortPlayCover || d.cover || '',
         chapterCount: count,
-        introduction: d.description || d.summary || d.introduction || d.intro || '',
-        tagV3s: Array.isArray(d.tags) ? d.tags.map(t => ({ tagName: String(t) })) : [],
+        introduction: d.shotIntroduce || d.shortIntroduce || d.description || d.summary || d.introduction || d.intro || '',
+        tagV3s: labels.map(t => ({ tagName: String(t) })),
         playCount: '',
         shelfTime: '',
         corner: null,
@@ -608,24 +605,9 @@ const SOURCE_ADAPTERS = {
     normalizeEpisodes: () => [],
     extractEpisodesFromDetail: r => {
       const d = r?.data || r || {};
-      const items = Array.isArray(d.items) ? d.items
-                  : Array.isArray(d.episodes) ? d.episodes
-                  : Array.isArray(d.list) ? d.list
-                  : Array.isArray(d.videos) ? d.videos
-                  : Array.isArray(d.chapters) ? d.chapters : [];
-      // ถ้ามี items array → ใช้โดยตรง
-      if (items.length) {
-        return items.map((e, i) => ({
-          chapterIndex: Number(e.serial_number ?? e.episode ?? e.ep ?? e.chapterIndex ?? e.index ?? (i + 1)),
-          isCharge: !!(e.locked || e.video_type === 'charge' || e.isCharge),
-          videoUrl: '',
-          '1080p': '',
-          '540p': '',
-        })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
-      }
-      // ไม่มี items → synthesize จาก episode count (1..N) — video URL fetch lazy ตอนเล่น
-      const count = Number(d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? d.count ?? (typeof d.episodes === 'number' ? d.episodes : 0)) || 0;
+      const count = Number(d.totalEpisode ?? d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? 0) || 0;
       if (count <= 0) return [];
+      // Synthesize [1..N] — URL fetch lazy ตอนเล่นผ่าน /watch/{id}/{ep}
       return Array.from({ length: count }, (_, i) => ({
         chapterIndex: i + 1,
         isCharge: false,
@@ -640,7 +622,7 @@ const SOURCE_ADAPTERS = {
       const q1080 = d['1080p_mp4'] || d['1080p'] || d.video_1080 || '';
       const q720  = d['720p_mp4']  || d['720p']  || d.video_720  || '';
       const q540  = d['540p_mp4']  || d['540p']  || d.video_480 || d.video_540 || '';
-      const main  = d.videoUrl || d.url || d.video || d.m3u8_path || q1080 || q720 || q540 || '';
+      const main  = d.videoUrl || d.url || d.video || d.m3u8_path || d.playUrl || d.videoPlayUrl || q1080 || q720 || q540 || '';
       if (Array.isArray(d.qualityList)) {
         const q = k => d.qualityList.find(x => x.label === k)?.url || '';
         return {
