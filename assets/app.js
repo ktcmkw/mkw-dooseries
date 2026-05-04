@@ -3,11 +3,49 @@
 // API: seriesjeen (via /proxy/api/platform/<source>/*) + local backend (/api/*)
 // ============================================================
 
-const API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave'];
-const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave' };
-const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500', shortmax: 'bg-blue-600', dramawave: 'bg-purple-600' };
+const API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave', netshort: 'Netshort' };
+const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500', shortmax: 'bg-blue-600', dramawave: 'bg-purple-600', netshort: 'bg-emerald-600' };
 const PAGE_SIZE = 40;
 const BRAND = 'MKW Movies';
+
+// NEW badge — populated after /api/books/ingest (per source, bookIds ที่เป็น NEW)
+const _newBookIds = { dramabox: new Set(), melolo: new Set(), shortmax: new Set(), dramawave: new Set(), netshort: new Set() };
+async function ingestAndMarkNew(res) {
+  try {
+    const buckets = res?._multi && Array.isArray(res._buckets) ? res._buckets : null;
+    const items = pickList(res);
+    const perSource = {};
+    if (buckets) {
+      // multi mode — group items by __source
+      for (const it of items) {
+        const s = it.__source;
+        if (!s) continue;
+        (perSource[s] = perSource[s] || []).push(it);
+      }
+    } else {
+      // single source mode — ใช้ source ปัจจุบัน
+      const s = getSource();
+      if (s !== 'all') perSource[s] = items;
+    }
+    await Promise.all(Object.entries(perSource).map(async ([src, list]) => {
+      const payload = list.slice(0, 50).map(x => ({
+        bookId: String(x.series_id || x.bookId || x.id || ''),
+        bookName: x.title || x.bookName || '',
+        cover: x.cover || x.coverWap || '',
+      })).filter(x => x.bookId);
+      if (!payload.length) return;
+      const r = await fetch('/api/books/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: src, items: payload }),
+      });
+      if (!r.ok) return;
+      const j = await r.json();
+      _newBookIds[src] = new Set(j.newBookIds || []);
+    }));
+  } catch { /* เงียบ — NEW badge optional */ }
+}
 
 function getSource() {
   const s = localStorage.getItem('mkw_source') || 'all';
@@ -92,7 +130,12 @@ const pointsTicker = {
   _onSecond() {
     const v = this.video;
     let counted = false;
-    if (v && !v.paused && !v.ended && !v.seeking && !document.hidden) {
+    // ถ้าครบ cap วันนี้แล้ว — หยุดนับ + ไม่หมุน ring (รอ midnight reset)
+    const u = auth.user;
+    const today = u?.pointsToday || 0;
+    const cap = u?.pointsDailyCap || 10000;
+    const capped = today >= cap && cap > 0;
+    if (!capped && v && !v.paused && !v.ended && !v.seeking && !document.hidden) {
       const t = v.currentTime;
       const dt = t - this.lastTime;
       this.lastTime = t;
@@ -100,6 +143,9 @@ const pointsTicker = {
         this.accumSec++;
         counted = true;
       }
+    } else if (v) {
+      // sync lastTime ตอน paused/capped กันกระโดดวินาทีเมื่อกลับมาเล่น
+      this.lastTime = v.currentTime;
     }
     updatePointsUi();
     if (counted && this.accumSec >= 60) this._flush();
@@ -123,6 +169,7 @@ function updatePointsUi() {
   const pts = u.points || 0;
   const today = u.pointsToday || 0;
   const cap = u.pointsDailyCap || 10000;
+  const capped = today >= cap && cap > 0;
   const accum = pointsTicker.accumSec || 0;
   const remaining = 60 - accum;
   const tickPct = Math.min(100, Math.round(accum / 60 * 100));
@@ -139,20 +186,31 @@ function updatePointsUi() {
   const pBar = document.getElementById('popupTickBar');
   if (pt) pt.textContent = `${today.toLocaleString()}/${cap.toLocaleString()}`;
   if (pb) pb.textContent = pts.toLocaleString();
-  if (pCd) pCd.textContent = pointsTicker.video ? `+10 พ้อยในอีก ${remaining} วิ` : 'ยังไม่ได้เล่นวิดีโอ';
-  if (pBar) pBar.style.width = tickPct + '%';
+  if (pCd) {
+    pCd.textContent = capped
+      ? '🎯 ครบโควตาวันนี้แล้ว (รีเซ็ตเที่ยงคืน)'
+      : pointsTicker.video ? `+10 พ้อยในอีก ${remaining} วิ` : 'ยังไม่ได้เล่นวิดีโอ';
+  }
+  if (pBar) pBar.style.width = (capped ? 100 : tickPct) + '%';
 
   // Mini circle — outer ring = tick progress (60s), inner ring = daily progress
   const mini = document.getElementById('pointsMini');
   if (mini) {
-    // ring แสดง tick progress (กำลังนับวิ) — สีทองหมุนเต็มทุก 60 วิ
-    mini.style.background = `conic-gradient(#fbbf24 ${tickPct}%, #3f3f46 ${tickPct}%)`;
+    if (capped) {
+      // ครบโควตา → ring เต็มสีเขียว + ไม่หมุน
+      mini.style.background = `conic-gradient(#10b981 100%, #10b981 100%)`;
+    } else {
+      // ring แสดง tick progress (กำลังนับวิ) — สีทองหมุนเต็มทุก 60 วิ
+      mini.style.background = `conic-gradient(#fbbf24 ${tickPct}%, #3f3f46 ${tickPct}%)`;
+    }
     const lblNum = mini.querySelector('.miniNum');
-    if (lblNum) lblNum.textContent = pointsTicker.video ? remaining + 's' : '⏸';
+    if (lblNum) lblNum.textContent = capped ? '✓' : (pointsTicker.video ? remaining + 's' : '⏸');
     const lblPts = mini.querySelector('.miniPts');
     if (lblPts) lblPts.textContent = pts >= 1000 ? Math.floor(pts / 1000) + 'k' : pts;
     // อัปเดต title แสดง daily progress
-    mini.title = `วันนี้ ${today.toLocaleString()}/${cap.toLocaleString()} (${dailyPct}%) • คงเหลือ ${pts.toLocaleString()} • แตะเพื่อขยาย • กดค้างลากได้`;
+    mini.title = capped
+      ? `🎯 ครบโควตาวันนี้แล้ว ${today.toLocaleString()}/${cap.toLocaleString()} • คงเหลือ ${pts.toLocaleString()} • รีเซ็ตเที่ยงคืน`
+      : `วันนี้ ${today.toLocaleString()}/${cap.toLocaleString()} (${dailyPct}%) • คงเหลือ ${pts.toLocaleString()} • แตะเพื่อขยาย • กดค้างลากได้`;
   }
 }
 
@@ -519,6 +577,61 @@ const SOURCE_ADAPTERS = {
       })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
     },
     fetchVideoUrl: null,  // URL ฝังใน detail response แล้ว
+  },
+  // Netshort — /drama/{id} detail (คล้าย DramaWave) + /watch/{id}/{ep} แยก (คล้าย Melolo — lazy fetch)
+  netshort: {
+    detailPath: id => `/drama/${encodeURIComponent(id)}`,
+    episodesPath: null,  // extract จาก detail แล้ว lazy fetch URL per-ep
+    normalizeDetail: r => {
+      if (!r) return null;
+      const d = r.data || r;
+      const items = Array.isArray(d.items) ? d.items : (Array.isArray(d.episodes) ? d.episodes : []);
+      return {
+        bookId: String(d.bookId || d.id || d.series_id || ''),
+        bookName: d.title || d.name || d.bookName || items[0]?.name || '(ไม่ทราบชื่อ)',
+        coverWap: d.cover || d.coverWap || items[0]?.cover || '',
+        cover: d.cover || '',
+        chapterCount: d.episode_count || d.chapterCount || d.episodes || items.length || 0,
+        introduction: d.description || d.summary || d.introduction || d.intro || '',
+        tagV3s: Array.isArray(d.tags) ? d.tags.map(t => ({ tagName: String(t) })) : [],
+        playCount: '',
+        shelfTime: '',
+        corner: null,
+      };
+    },
+    normalizeEpisodes: () => [],
+    extractEpisodesFromDetail: r => {
+      const d = r?.data || r || {};
+      const items = Array.isArray(d.items) ? d.items : (Array.isArray(d.episodes) ? d.episodes : []);
+      return items.map(e => ({
+        chapterIndex: Number(e.serial_number || e.episode || e.chapterIndex || 0),
+        isCharge: !!(e.locked || e.video_type === 'charge'),
+        videoUrl: '',          // lazy — fetch ตอน playEpisode
+        '1080p': '',
+        '540p': '',
+      })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
+    },
+    fetchVideoUrl: async (bookId, ep) => {
+      const v = await apiGet(`/watch/${encodeURIComponent(bookId)}/${encodeURIComponent(ep)}`, 'netshort');
+      const d = v?.data || v || {};
+      // Try common URL fields (ไม่รู้ shape แน่ชัด — fallback chain)
+      const q1080 = d['1080p_mp4'] || d['1080p'] || d.video_1080 || '';
+      const q720  = d['720p_mp4']  || d['720p']  || d.video_720  || '';
+      const q540  = d['540p_mp4']  || d['540p']  || d.video_480 || d.video_540 || '';
+      const main  = d.videoUrl || d.url || d.video || d.m3u8_path || q1080 || q720 || q540 || '';
+      // qualityList ถ้าส่งมาแบบ Melolo
+      if (Array.isArray(d.qualityList)) {
+        const q = k => d.qualityList.find(x => x.label === k)?.url || '';
+        return {
+          videoUrl: main || q('1080p') || q('720p') || q('540p') || '',
+          '1080p': q1080 || q('1080p'),
+          '720p': q720 || q('720p'),
+          '540p': q540 || q('540p'),
+          locked: !!d.locked,
+        };
+      }
+      return { videoUrl: main, '1080p': q1080, '720p': q720, '540p': q540, locked: !!d.locked };
+    },
   },
 };
 function getAdapter(source) {
@@ -1351,15 +1464,20 @@ function dramaCard(d) {
   const firstGenre = (d.genre || '').split(',')[0].trim();
   const tLower = title.toLowerCase();
   // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
-  // DramaWave/ShortMax เป็นแพลตฟอร์มพากย์ไทยอยู่แล้ว — title มี Thai chars = พากย์ไทย
+  // DramaWave/ShortMax = แพลตฟอร์ม "ซับไทย" — title มี Thai chars = SUBTHAI (ไม่ใช่พากย์)
   const hasThaiChars = /[฀-๿]/.test(title);
-  const nativeThaiSource = (src === 'dramawave' || src === 'shortmax') && hasThaiChars;
-  const isThaiDub = nativeThaiSource || title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
-  const isSubThai = !isThaiDub && (tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
+  const nativeSubThaiSource = (src === 'dramawave' || src === 'shortmax') && hasThaiChars;
+  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
+  const isSubThai = !isThaiDub && (nativeSubThaiSource || tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
+  const isNew = _newBookIds[src]?.has(rawId);
+  const newBadge = isNew
+    ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-red-600 text-white text-[10px] font-black rounded shadow-lg animate-pulse z-10">🆕 NEW</div>'
+    : '';
+  const langTop = isNew ? 'top-9' : 'top-2';
   const langBadge = isThaiDub
-    ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">พากย์ไทย</div>'
+    ? `<div class="absolute ${langTop} left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">พากย์ไทย</div>`
     : isSubThai
-      ? '<div class="absolute top-2 left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">SUBTHAI</div>'
+      ? `<div class="absolute ${langTop} left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">SUBTHAI</div>`
       : '';
   const srcBadge = `<div class="absolute top-2 right-2 px-2 py-0.5 ${SOURCE_BADGE_CLS[src] || 'bg-zinc-700'} text-white text-[10px] font-bold rounded shadow">${escapeHtml(SOURCE_LABELS[src] || src.toUpperCase())}</div>`;
   return `
@@ -1367,6 +1485,7 @@ function dramaCard(d) {
       <div class="relative card-img rounded-lg overflow-hidden bg-zinc-900">
         <img src="${escapeHtml(cover)}" alt="" loading="lazy" class="w-full h-full object-cover" onerror="this.style.opacity=0"/>
         <div class="absolute inset-0 gradient-fade"></div>
+        ${newBadge}
         ${langBadge}
         ${srcBadge}
         <div class="absolute bottom-2 left-2 right-2">
@@ -1466,6 +1585,7 @@ async function initBrowsePage(opts) {
   try {
     const res = await apiGetList(opts.endpoint);
     const list = pickList(res);
+    await ingestAndMarkNew(res);
     renderGrid(grid, list);
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
     let bucketsNote = '';
@@ -1502,22 +1622,56 @@ async function initHomePage() {
   // Per-source endpoint mapping — Melolo /search ไม่รองรับ keyword Thai + ไม่มี genre → ใช้ /list + client filter
   const dList = p => `/list?page=${p}&page_size=${size}`;
   const dThaiKeyword = encodeURIComponent('พากย์ไทย');
+  const dChineseKeyword = encodeURIComponent('จีน');
+  const dKoreanKeyword = encodeURIComponent('เกาหลี');
+  const dJapaneseKeyword = encodeURIComponent('ญี่ปุ่น');
   const thaiTitleFilter = it => /\(พากย์\)|พากย์ไทย/.test(it.title || it.bookName || '');
+  const chineseTitleFilter = it => /จีน|chinese|中国|中文/i.test(it.title || it.bookName || '');
+  const koreanTitleFilter = it => /เกาหลี|korean|한국/i.test(it.title || it.bookName || '');
+  const japaneseTitleFilter = it => /ญี่ปุ่น|japanese|日本/i.test(it.title || it.bookName || '');
   const filters = [
     { key: 'all',    label: 'ทั้งหมด',
-      spec: p => ({ dramabox: dList(p), melolo: dList(p), shortmax: dList(p), dramawave: dList(p) }) },
-    { key: 'thai',   label: 'พากย์ไทย',
+      spec: p => ({ dramabox: dList(p), melolo: dList(p), shortmax: dList(p), dramawave: dList(p), netshort: dList(p) }) },
+    { key: 'thai',   label: '🇹🇭 พากย์ไทย',
       spec: p => ({
         dramabox: `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`,
         melolo: dList(p),
         shortmax: dList(p),
         dramawave: dList(p),
-        filter: { melolo: thaiTitleFilter, shortmax: thaiTitleFilter, dramawave: thaiTitleFilter },
+        netshort: dList(p),
+        filter: { melolo: thaiTitleFilter, shortmax: thaiTitleFilter, dramawave: thaiTitleFilter, netshort: thaiTitleFilter },
       }) },
-    { key: 'anime',  label: 'การ์ตูน',
-      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null }) },
-    { key: 'vip',    label: 'VIP',
-      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null }) },
+    { key: 'chinese', label: '🇨🇳 จีน',
+      spec: p => ({
+        dramabox: `/search?keyword=${dChineseKeyword}&page=${p}&page_size=${size}`,
+        melolo: dList(p),
+        shortmax: dList(p),
+        dramawave: dList(p),
+        netshort: dList(p),
+        filter: { melolo: chineseTitleFilter, shortmax: chineseTitleFilter, dramawave: chineseTitleFilter, netshort: chineseTitleFilter },
+      }) },
+    { key: 'korean', label: '🇰🇷 เกาหลี',
+      spec: p => ({
+        dramabox: `/search?keyword=${dKoreanKeyword}&page=${p}&page_size=${size}`,
+        melolo: dList(p),
+        shortmax: dList(p),
+        dramawave: dList(p),
+        netshort: dList(p),
+        filter: { melolo: koreanTitleFilter, shortmax: koreanTitleFilter, dramawave: koreanTitleFilter, netshort: koreanTitleFilter },
+      }) },
+    { key: 'japanese', label: '🇯🇵 ญี่ปุ่น',
+      spec: p => ({
+        dramabox: `/search?keyword=${dJapaneseKeyword}&page=${p}&page_size=${size}`,
+        melolo: dList(p),
+        shortmax: dList(p),
+        dramawave: dList(p),
+        netshort: dList(p),
+        filter: { melolo: japaneseTitleFilter, shortmax: japaneseTitleFilter, dramawave: japaneseTitleFilter, netshort: japaneseTitleFilter },
+      }) },
+    { key: 'anime',  label: '🎌 การ์ตูน',
+      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null, netshort: null }) },
+    { key: 'vip',    label: '💎 VIP',
+      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null, netshort: null }) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 

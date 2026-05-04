@@ -34,6 +34,7 @@ async function initAdminPage() {
       <button data-tab="register"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">📝 สมัครสมาชิก</button>
       <button data-tab="points"    class="tab-btn px-4 py-2 text-sm rounded-t-lg">💎 Point & แพ็กเกจ</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
+      <button data-tab="seenbooks" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🆕 หนังใหม่</button>
     </div>
     <div id="tabContent"></div>
   `);
@@ -70,6 +71,7 @@ async function loadTab(tab) {
     if (tab === 'register')  return renderRegisterTab(c);
     if (tab === 'points')    return renderPointsTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
+    if (tab === 'seenbooks') return renderSeenBooksTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
   }
@@ -1675,4 +1677,104 @@ async function renderPointsTab(c) {
       st.classList.add('text-red-400');
     }
   };
+}
+
+// ---------- Seen books (NEW badge tracking — read-only log + clear) ----------
+async function renderSeenBooksTab(c) {
+  const { seenBooks } = await backendGet('/api/admin/seen-books');
+  const sources = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+  const labels = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave', netshort: 'Netshort' };
+  const fmt = iso => {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  const totals = sources.map(s => (seenBooks[s] || []).length);
+  const newCounts = sources.map(s => (seenBooks[s] || []).filter(b => b.isNew).length);
+
+  c.innerHTML = `
+    <div class="space-y-4">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2">🆕 ระบบติดตามหนังใหม่</h3>
+        <p class="text-xs text-zinc-500 mb-3">
+          ระบบบันทึก bookId ทุกเรื่องที่ frontend เห็นบนหน้าแรก/หน้า browse — เรื่องที่
+          <strong class="text-red-400">เห็นครั้งแรกภายใน 7 วันล่าสุด + ติด top 10 ใหม่สุดของ source</strong>
+          จะแสดง badge <span class="px-2 py-0.5 bg-red-600 text-white text-[10px] font-black rounded">🆕 NEW</span> บนหน้าปก
+          จนกว่าจะมีเรื่องใหม่กว่ามาแทนที่ • <span class="text-amber-300">user ลบไม่ได้ — admin เท่านั้น</span>
+        </p>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          ${sources.map((s, i) => `
+            <div class="px-3 py-2 bg-zinc-950 border border-zinc-800 rounded">
+              <div class="font-bold text-zinc-200">${labels[s]}</div>
+              <div class="text-zinc-500">บันทึก ${totals[i]} • <span class="text-red-400 font-bold">NEW ${newCounts[i]}</span></div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="flex gap-2 mt-3">
+          <button id="sbClearAll" class="text-xs px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 rounded">⚠ ล้างทั้งหมด (รีเซ็ต NEW ทุก source)</button>
+        </div>
+      </div>
+
+      ${sources.map(s => {
+        const list = seenBooks[s] || [];
+        return `
+          <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+            <div class="flex items-center gap-2 mb-3 flex-wrap">
+              <h4 class="font-bold">${labels[s]}</h4>
+              <span class="text-xs text-zinc-500">${list.length} เรื่อง • <span class="text-red-400 font-bold">${list.filter(b => b.isNew).length} NEW</span></span>
+              ${list.length ? `<button data-clear-src="${s}" class="ml-auto text-[11px] px-2 py-1 bg-zinc-800 hover:bg-red-600 hover:text-white text-zinc-300 rounded">ล้าง ${labels[s]}</button>` : ''}
+            </div>
+            ${list.length ? `
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                  <thead class="bg-zinc-950 text-zinc-400">
+                    <tr>
+                      <th class="p-2 text-left">ปก</th>
+                      <th class="p-2 text-left">ชื่อเรื่อง</th>
+                      <th class="p-2 text-left font-mono">bookId</th>
+                      <th class="p-2 text-left">เห็นครั้งแรก</th>
+                      <th class="p-2 text-center w-16">NEW</th>
+                      <th class="p-2 text-center w-12"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${list.slice(0, 100).map(b => `
+                      <tr class="border-t border-zinc-800">
+                        <td class="p-2">${b.cover ? `<img src="${escapeHtml(b.cover)}" class="w-8 h-12 object-cover rounded" onerror="this.style.display='none'"/>` : '<span class="text-zinc-600">—</span>'}</td>
+                        <td class="p-2">${escapeHtml(b.bookName || '(ไม่ทราบชื่อ)')}</td>
+                        <td class="p-2 font-mono text-zinc-500">${escapeHtml(b.bookId)}</td>
+                        <td class="p-2 text-zinc-400">${fmt(b.firstSeenAt)}</td>
+                        <td class="p-2 text-center">${b.isNew ? '<span class="px-1.5 py-0.5 bg-red-600 text-white text-[10px] font-black rounded">NEW</span>' : '<span class="text-zinc-600">—</span>'}</td>
+                        <td class="p-2 text-center"><button data-del-src="${s}" data-del-id="${escapeHtml(b.bookId)}" class="text-red-400 hover:text-red-300 text-lg leading-none">×</button></td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>
+                ${list.length > 100 ? `<div class="text-center text-[11px] text-zinc-500 py-2">แสดง 100 รายการล่าสุด (จากทั้งหมด ${list.length})</div>` : ''}
+              </div>
+            ` : `<div class="text-xs text-zinc-500 text-center py-6">ยังไม่มีบันทึก — รอ user เข้าหน้าแรก/browse</div>`}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  $('#sbClearAll').onclick = async () => {
+    if (!confirm('ล้าง bookId ที่บันทึกไว้ทั้งหมดทุก source? — ทุกเรื่องจะถูก mark NEW อีกครั้งเมื่อ user เข้าเว็บ')) return;
+    try { await backendDelete('/api/admin/seen-books'); renderSeenBooksTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  };
+  $$('[data-clear-src]').forEach(b => b.onclick = async () => {
+    const src = b.dataset.clearSrc;
+    if (!confirm(`ล้างบันทึก ${labels[src]} ทั้งหมด?`)) return;
+    try { await backendDelete(`/api/admin/seen-books?source=${encodeURIComponent(src)}`); renderSeenBooksTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('[data-del-id]').forEach(b => b.onclick = async () => {
+    const src = b.dataset.delSrc;
+    const bid = b.dataset.delId;
+    if (!confirm(`ลบ bookId ${bid} ออกจากบันทึก?`)) return;
+    try { await backendDelete(`/api/admin/seen-books/${encodeURIComponent(src)}/${encodeURIComponent(bid)}`); renderSeenBooksTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
 }

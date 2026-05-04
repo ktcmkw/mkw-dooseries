@@ -19,6 +19,7 @@ if (!SERIESJEEN_TOKEN) {
 }
 
 const EPISODE_COST = 1;  // MKW Coin per locked episode
+const API_SOURCES_SERVER = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -77,6 +78,7 @@ const DEFAULT_DATA = {
   bannedIps: {},                                              // ip → { until, reason }
   pointsConfig: { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 },  // 100 point = 1 coin
   sessionClosures: {},                                        // token → { reason, at } (TTL 24h) เก็บไว้แจ้งฝั่ง client ที่ถูกเตะ
+  seenBooks: {},                                              // source → bookId → { firstSeenAt, bookName, cover } (NEW badge tracking)
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -610,6 +612,51 @@ async function handleApi(req, res, pathname, query) {
       hiddenBooks: Object.keys(data.hiddenBooks || {}),
       trackingDisabled: !!data.disableTracking,
     });
+  }
+
+  // ===== Books ingest — บันทึก bookId ที่ frontend เห็นใน /list → กลับ bookIds ที่เป็น NEW =====
+  // NEW = firstSeenAt อยู่ใน 7 วันล่าสุด + อยู่ใน top 10 ล่าสุดของ source นั้น
+  // Public endpoint (ไม่ต้อง login) — rate limited per IP เพื่อกันสแปม
+  if (req.method === 'POST' && pathname === '/api/books/ingest') {
+    const rl = rateLimit(`ingest:${ip}`, 30, 60_000);
+    if (!rl.ok) return badRequest(res, `ส่งถี่เกินไป ลองใหม่ใน ${rl.retryAfterSec} วินาที`);
+    const body = await readBody(req);
+    const source = String(body.source || '').trim();
+    if (!API_SOURCES_SERVER.includes(source)) return badRequest(res, 'source ไม่ถูกต้อง');
+    const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
+    data.seenBooks = data.seenBooks || {};
+    data.seenBooks[source] = data.seenBooks[source] || {};
+    const bucket = data.seenBooks[source];
+    const nowIso = new Date().toISOString();
+    let added = 0;
+    for (const it of items) {
+      const bookId = String(it?.bookId || '').trim();
+      if (!bookId) continue;
+      if (!bucket[bookId]) {
+        bucket[bookId] = {
+          firstSeenAt: nowIso,
+          bookName: String(it.bookName || '').slice(0, 200),
+          cover: String(it.cover || '').slice(0, 500),
+        };
+        added++;
+      }
+    }
+    // GC: ลบ entry ที่เก่ากว่า 30 วัน เพื่อจำกัดขนาด
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    for (const [bid, info] of Object.entries(bucket)) {
+      const t = new Date(info.firstSeenAt).getTime();
+      if (!isNaN(t) && t < cutoff) delete bucket[bid];
+    }
+    if (added > 0) await writeData(data);
+    // คำนวณ NEW: top 10 ล่าสุด + firstSeenAt ≤ 7 วัน
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const sorted = Object.entries(bucket)
+      .sort((a, b) => (b[1].firstSeenAt || '').localeCompare(a[1].firstSeenAt || ''))
+      .slice(0, 10);
+    const newBookIds = sorted
+      .filter(([, info]) => new Date(info.firstSeenAt).getTime() >= weekAgo)
+      .map(([bid]) => bid);
+    return json(res, 200, { newBookIds, added, total: Object.keys(bucket).length });
   }
 
   // ===== Auth =====
@@ -1148,6 +1195,57 @@ async function handleApi(req, res, pathname, query) {
     const bookId = decodeURIComponent(mHide[1]);
     if (!data.hiddenBooks?.[bookId]) return notFound(res);
     delete data.hiddenBooks[bookId];
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  // ===== Seen books (NEW badge tracking) =====
+  // GET list ทั้งหมดต่อ source พร้อม NEW marker
+  if (pathname === '/api/admin/seen-books' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const sb = data.seenBooks || {};
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const out = {};
+    for (const src of API_SOURCES_SERVER) {
+      const bucket = sb[src] || {};
+      const entries = Object.entries(bucket)
+        .map(([bookId, info]) => ({
+          bookId,
+          bookName: info.bookName || '',
+          cover: info.cover || '',
+          firstSeenAt: info.firstSeenAt,
+          isNew: new Date(info.firstSeenAt).getTime() >= weekAgo,
+        }))
+        .sort((a, b) => (b.firstSeenAt || '').localeCompare(a.firstSeenAt || ''));
+      // Mark top 10 ล่าสุด + ≤7วัน = NEW (ตรงกับ frontend logic)
+      const top10 = new Set(entries.slice(0, 10).filter(e => e.isNew).map(e => e.bookId));
+      entries.forEach(e => { e.isNew = top10.has(e.bookId); });
+      out[src] = entries;
+    }
+    return json(res, 200, { seenBooks: out });
+  }
+  // DELETE all per source
+  if (pathname === '/api/admin/seen-books' && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const src = String(query.source || '').trim();
+    data.seenBooks = data.seenBooks || {};
+    if (src && API_SOURCES_SERVER.includes(src)) {
+      data.seenBooks[src] = {};
+    } else {
+      for (const s of API_SOURCES_SERVER) data.seenBooks[s] = {};
+    }
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  // DELETE รายการเดียว
+  const mSeenDel = pathname.match(/^\/api\/admin\/seen-books\/([^/]+)\/([^/]+)$/);
+  if (mSeenDel && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const src = decodeURIComponent(mSeenDel[1]);
+    const bookId = decodeURIComponent(mSeenDel[2]);
+    if (!API_SOURCES_SERVER.includes(src)) return badRequest(res, 'source ไม่ถูกต้อง');
+    if (!data.seenBooks?.[src]?.[bookId]) return notFound(res);
+    delete data.seenBooks[src][bookId];
     await writeData(data);
     return json(res, 200, { ok: true });
   }
