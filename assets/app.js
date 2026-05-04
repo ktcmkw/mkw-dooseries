@@ -579,19 +579,25 @@ const SOURCE_ADAPTERS = {
     fetchVideoUrl: null,  // URL ฝังใน detail response แล้ว
   },
   // Netshort — /drama/{id} detail (คล้าย DramaWave) + /watch/{id}/{ep} แยก (คล้าย Melolo — lazy fetch)
+  // ถ้า detail ไม่มี items list → synthesize จาก episode_count ([1..N])
   netshort: {
     detailPath: id => `/drama/${encodeURIComponent(id)}`,
-    episodesPath: null,  // extract จาก detail แล้ว lazy fetch URL per-ep
+    episodesPath: null,
     normalizeDetail: r => {
       if (!r) return null;
       const d = r.data || r;
-      const items = Array.isArray(d.items) ? d.items : (Array.isArray(d.episodes) ? d.episodes : []);
+      const items = Array.isArray(d.items) ? d.items
+                  : Array.isArray(d.episodes) ? d.episodes
+                  : Array.isArray(d.list) ? d.list
+                  : Array.isArray(d.videos) ? d.videos
+                  : Array.isArray(d.chapters) ? d.chapters : [];
+      const count = Number(d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? d.count ?? (typeof d.episodes === 'number' ? d.episodes : 0) ?? items.length) || items.length || 0;
       return {
         bookId: String(d.bookId || d.id || d.series_id || ''),
         bookName: d.title || d.name || d.bookName || items[0]?.name || '(ไม่ทราบชื่อ)',
         coverWap: d.cover || d.coverWap || items[0]?.cover || '',
         cover: d.cover || '',
-        chapterCount: d.episode_count || d.chapterCount || d.episodes || items.length || 0,
+        chapterCount: count,
         introduction: d.description || d.summary || d.introduction || d.intro || '',
         tagV3s: Array.isArray(d.tags) ? d.tags.map(t => ({ tagName: String(t) })) : [],
         playCount: '',
@@ -602,24 +608,39 @@ const SOURCE_ADAPTERS = {
     normalizeEpisodes: () => [],
     extractEpisodesFromDetail: r => {
       const d = r?.data || r || {};
-      const items = Array.isArray(d.items) ? d.items : (Array.isArray(d.episodes) ? d.episodes : []);
-      return items.map(e => ({
-        chapterIndex: Number(e.serial_number || e.episode || e.chapterIndex || 0),
-        isCharge: !!(e.locked || e.video_type === 'charge'),
-        videoUrl: '',          // lazy — fetch ตอน playEpisode
+      const items = Array.isArray(d.items) ? d.items
+                  : Array.isArray(d.episodes) ? d.episodes
+                  : Array.isArray(d.list) ? d.list
+                  : Array.isArray(d.videos) ? d.videos
+                  : Array.isArray(d.chapters) ? d.chapters : [];
+      // ถ้ามี items array → ใช้โดยตรง
+      if (items.length) {
+        return items.map((e, i) => ({
+          chapterIndex: Number(e.serial_number ?? e.episode ?? e.ep ?? e.chapterIndex ?? e.index ?? (i + 1)),
+          isCharge: !!(e.locked || e.video_type === 'charge' || e.isCharge),
+          videoUrl: '',
+          '1080p': '',
+          '540p': '',
+        })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
+      }
+      // ไม่มี items → synthesize จาก episode count (1..N) — video URL fetch lazy ตอนเล่น
+      const count = Number(d.episode_count ?? d.chapterCount ?? d.totalEpisodes ?? d.total_episodes ?? d.total ?? d.count ?? (typeof d.episodes === 'number' ? d.episodes : 0)) || 0;
+      if (count <= 0) return [];
+      return Array.from({ length: count }, (_, i) => ({
+        chapterIndex: i + 1,
+        isCharge: false,
+        videoUrl: '',
         '1080p': '',
         '540p': '',
-      })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
+      }));
     },
     fetchVideoUrl: async (bookId, ep) => {
       const v = await apiGet(`/watch/${encodeURIComponent(bookId)}/${encodeURIComponent(ep)}`, 'netshort');
       const d = v?.data || v || {};
-      // Try common URL fields (ไม่รู้ shape แน่ชัด — fallback chain)
       const q1080 = d['1080p_mp4'] || d['1080p'] || d.video_1080 || '';
       const q720  = d['720p_mp4']  || d['720p']  || d.video_720  || '';
       const q540  = d['540p_mp4']  || d['540p']  || d.video_480 || d.video_540 || '';
       const main  = d.videoUrl || d.url || d.video || d.m3u8_path || q1080 || q720 || q540 || '';
-      // qualityList ถ้าส่งมาแบบ Melolo
       if (Array.isArray(d.qualityList)) {
         const q = k => d.qualityList.find(x => x.label === k)?.url || '';
         return {
@@ -1370,11 +1391,8 @@ function attachHeaderEvents() {
 function renderSourceSwitcherInline() {
   const cur = getSource();
   const opts = [
-    { key: 'all',       label: 'ทั้งหมด' },
-    { key: 'dramabox',  label: SOURCE_LABELS.dramabox },
-    { key: 'melolo',    label: SOURCE_LABELS.melolo },
-    { key: 'shortmax',  label: SOURCE_LABELS.shortmax },
-    { key: 'dramawave', label: SOURCE_LABELS.dramawave },
+    { key: 'all', label: 'ทั้งหมด' },
+    ...API_SOURCES.map(s => ({ key: s, label: SOURCE_LABELS[s] || s })),
   ];
   return `
     <div class="source-switcher inline-flex items-center gap-1.5 flex-wrap">

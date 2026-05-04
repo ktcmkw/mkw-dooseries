@@ -1681,7 +1681,11 @@ async function renderPointsTab(c) {
 
 // ---------- Seen books (NEW badge tracking — read-only log + clear) ----------
 async function renderSeenBooksTab(c) {
-  const { seenBooks } = await backendGet('/api/admin/seen-books');
+  const [{ seenBooks }, pollStatus] = await Promise.all([
+    backendGet('/api/admin/seen-books'),
+    backendGet('/api/admin/poll-status').catch(() => ({ lastPollAt: {} })),
+  ]);
+  const lastPollAt = pollStatus.lastPollAt || {};
   const sources = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
   const labels = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave', netshort: 'Netshort' };
   const fmt = iso => {
@@ -1710,8 +1714,13 @@ async function renderSeenBooksTab(c) {
             </div>
           `).join('')}
         </div>
-        <div class="flex gap-2 mt-3">
+        <div class="flex gap-2 mt-3 flex-wrap">
+          <button id="sbPollNow" class="text-xs px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded">🔄 Poll ตอนนี้ (active)</button>
           <button id="sbClearAll" class="text-xs px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-300 rounded">⚠ ล้างทั้งหมด (รีเซ็ต NEW ทุก source)</button>
+        </div>
+        <div class="mt-3 text-[11px] text-zinc-500 leading-relaxed">
+          🕛 <strong class="text-zinc-300">Active polling เที่ยงคืนทุกวัน (เวลาประเทศไทย)</strong> — ระบบจะดึง /list หน้าแรกของทั้ง 5 ค่ายอัตโนมัติ เพิ่มหนังใหม่ที่ยังไม่เคยเห็น แต่ละค่ายแยกกัน fail-isolated (ค่ายหนึ่งล่มไม่กระทบอีกค่าย).
+          <span class="block mt-1 text-zinc-600">Poll ล่าสุดต่อค่าย: ${sources.map(s => `${labels[s]}: <span class="text-zinc-300">${fmt(lastPollAt[s]) || '—'}</span>`).join(' • ')}</span>
         </div>
       </div>
 
@@ -1763,6 +1772,24 @@ async function renderSeenBooksTab(c) {
     if (!confirm('ล้าง bookId ที่บันทึกไว้ทั้งหมดทุก source? — ทุกเรื่องจะถูก mark NEW อีกครั้งเมื่อ user เข้าเว็บ')) return;
     try { await backendDelete('/api/admin/seen-books'); renderSeenBooksTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  };
+  $('#sbPollNow').onclick = async () => {
+    const btn = $('#sbPollNow');
+    btn.disabled = true;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '⏳ กำลัง poll ทุก source...';
+    try {
+      const r = await backendPost('/api/admin/poll-now', {});
+      const lines = (r.summary || []).map(s =>
+        s.error ? `${s.source}: ✕ ${s.error}` : `${s.source}: +${s.added} ใหม่ / ${s.fetched} ดึง / รวม ${s.total}`
+      );
+      alert('Poll เสร็จ:\n\n' + lines.join('\n'));
+      renderSeenBooksTab(c);
+    } catch (e) {
+      alert('Poll ไม่สำเร็จ: ' + e.message);
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    }
   };
   $$('[data-clear-src]').forEach(b => b.onclick = async () => {
     const src = b.dataset.clearSrc;

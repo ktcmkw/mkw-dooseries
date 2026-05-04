@@ -79,6 +79,7 @@ const DEFAULT_DATA = {
   pointsConfig: { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 },  // 100 point = 1 coin
   sessionClosures: {},                                        // token → { reason, at } (TTL 24h) เก็บไว้แจ้งฝั่ง client ที่ถูกเตะ
   seenBooks: {},                                              // source → bookId → { firstSeenAt, bookName, cover } (NEW badge tracking)
+  lastPollAt: {},                                             // source → ISO timestamp ของ midnight poll ครั้งล่าสุด
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -1250,6 +1251,22 @@ async function handleApi(req, res, pathname, query) {
     return json(res, 200, { ok: true });
   }
 
+  // Manual trigger active poll (admin) — รัน immediately แทนรอเที่ยงคืน
+  if (pathname === '/api/admin/poll-now' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    try {
+      const summary = await pollAllSourcesForNewBooks();
+      return json(res, 200, { ok: true, summary, lastPollAt: (await readData()).lastPollAt || {} });
+    } catch (e) {
+      return json(res, 500, { error: 'poll_failed', message: e.message });
+    }
+  }
+  // GET สถานะ poll ล่าสุด
+  if (pathname === '/api/admin/poll-status' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { lastPollAt: data.lastPollAt || {}, sources: API_SOURCES_SERVER });
+  }
+
   // ===== Announcement banner =====
   if (pathname === '/api/admin/announcement' && req.method === 'GET') {
     if (!requireAdmin()) return;
@@ -1903,6 +1920,101 @@ async function handleApi(req, res, pathname, query) {
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);
 }
 
+// ---------- Active polling: หนังใหม่จาก /list ของแต่ละค่าย (เที่ยงคืน ICT) ----------
+// แต่ละ source poll แยก fail-isolated — ถ้า source หนึ่ง fetch ไม่ได้ NEW badge ของ source อื่นยังคงอยู่
+function httpsGetSeriesjeen(targetPath) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: SERIESJEEN_HOST,
+      path: targetPath,
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + SERIESJEEN_TOKEN,
+        'Accept': 'application/json',
+        'User-Agent': 'mkw-dooseries-poller/1.0',
+      },
+    }, r => {
+      let buf = '';
+      r.on('data', d => buf += d);
+      r.on('end', () => {
+        if (r.statusCode >= 400) return reject(new Error(`HTTP ${r.statusCode}: ${buf.slice(0, 200)}`));
+        try { resolve(JSON.parse(buf)); } catch { reject(new Error('invalid JSON: ' + buf.slice(0, 200))); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(new Error('timeout')); });
+    req.end();
+  });
+}
+
+async function pollSourceForNewBooks(source, data) {
+  if (!SERIESJEEN_TOKEN) throw new Error('SERIESJEEN_TOKEN not set');
+  const payload = await httpsGetSeriesjeen(`/api/platform/${source}/list?page=1&page_size=50`);
+  const raw = Array.isArray(payload) ? payload : (payload?.items || []);
+  const items = raw.map(x => ({
+    bookId: String(x.series_id || x.bookId || x.id || ''),
+    bookName: String(x.title || x.bookName || '').slice(0, 200),
+    cover: String(x.cover || x.coverWap || '').slice(0, 500),
+  })).filter(x => x.bookId);
+
+  data.seenBooks = data.seenBooks || {};
+  data.seenBooks[source] = data.seenBooks[source] || {};
+  const bucket = data.seenBooks[source];
+  const nowIso = new Date().toISOString();
+  let added = 0;
+  for (const it of items) {
+    if (!bucket[it.bookId]) {
+      bucket[it.bookId] = { firstSeenAt: nowIso, bookName: it.bookName, cover: it.cover };
+      added++;
+    }
+  }
+  // GC 30 วัน (เหมือน /api/books/ingest)
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  for (const [bid, info] of Object.entries(bucket)) {
+    const t = new Date(info.firstSeenAt).getTime();
+    if (!isNaN(t) && t < cutoff) delete bucket[bid];
+  }
+  data.lastPollAt = data.lastPollAt || {};
+  data.lastPollAt[source] = nowIso;
+  return { source, added, fetched: items.length, total: Object.keys(bucket).length };
+}
+
+async function pollAllSourcesForNewBooks() {
+  if (!SERIESJEEN_TOKEN) {
+    console.warn('[poll] skip — SERIESJEEN_TOKEN not set');
+    return [];
+  }
+  const data = await readData();
+  const results = await Promise.allSettled(API_SOURCES_SERVER.map(s => pollSourceForNewBooks(s, data)));
+  const summary = results.map((r, i) => {
+    const source = API_SOURCES_SERVER[i];
+    if (r.status === 'fulfilled') return r.value;
+    console.warn(`[poll] ${source} failed:`, r.reason?.message || r.reason);
+    return { source, error: r.reason?.message || String(r.reason) };
+  });
+  await writeData(data);
+  console.log('[poll]', summary.map(s => s.error ? `${s.source}:✕(${s.error})` : `${s.source}:+${s.added}/${s.fetched}`).join(' '));
+  return summary;
+}
+
+// คำนวณ ms จนถึง 00:00 ICT (UTC+7) ถัดไป
+function msUntilMidnightICT() {
+  const now = Date.now();
+  const ictNow = new Date(now + 7 * 60 * 60 * 1000);
+  const ictNextUtc = Date.UTC(ictNow.getUTCFullYear(), ictNow.getUTCMonth(), ictNow.getUTCDate() + 1, 0, 0, 0, 0);
+  // ictNextUtc คือ epoch ms ของ 00:00 ICT ของวันถัดไป (เพราะ ictNow shift +7h แล้ว) → ลบ 7h กลับเป็น UTC
+  return (ictNextUtc - 7 * 60 * 60 * 1000) - now;
+}
+
+function scheduleMidnightPoll() {
+  const ms = msUntilMidnightICT();
+  console.log(`[poll] next midnight ICT poll in ${(ms / 3_600_000).toFixed(2)}h`);
+  setTimeout(async () => {
+    try { await pollAllSourcesForNewBooks(); } catch (e) { console.error('[poll] error:', e); }
+    scheduleMidnightPoll();
+  }, ms);
+}
+
 // ---------- Main server ----------
 const server = http.createServer(async (req, res) => {
   try {
@@ -1949,4 +2061,5 @@ server.listen(PORT, () => {
   console.log(`MKW Movies: http://localhost:${PORT}/`);
   console.log(`Proxy: /proxy/* → https://${SERIESJEEN_HOST}/*`);
   console.log(`Data: ${DATA_FILE}`);
+  scheduleMidnightPoll();
 });
