@@ -403,25 +403,30 @@ function reopenPointsPopup() {
 // ---------- API clients ----------
 async function apiGet(path, source) {
   const src = source || 'dramabox';
+  // Netshort: pin locale=th — upstream แปล title/desc เป็นไทย (ไม่กระทบ videoUrl/subtitles)
+  let finalPath = path;
+  if (src === 'netshort' && !/[?&]locale=/.test(path)) {
+    finalPath = path + (path.includes('?') ? '&' : '?') + 'locale=th';
+  }
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);  // 15s timeout/attempt — กัน upstream ค้าง
     try {
-      const res = await fetch(apiBase(src) + path, { signal: ctrl.signal });
+      const res = await fetch(apiBase(src) + finalPath, { signal: ctrl.signal });
       clearTimeout(timer);
       if (res.ok) return res.json();
       const body = await res.text().catch(() => '');
-      lastErr = new Error(`HTTP ${res.status} — [${src}] ${path}`);
-      lastErr.status = res.status; lastErr.endpoint = path; lastErr.source = src; lastErr.body = body.slice(0, 400);
+      lastErr = new Error(`HTTP ${res.status} — [${src}] ${finalPath}`);
+      lastErr.status = res.status; lastErr.endpoint = finalPath; lastErr.source = src; lastErr.body = body.slice(0, 400);
       // Retry เฉพาะ 5xx (อัปสตรีมล่มชั่วคราว เช่น DramaWave 503 "Sistem sedang sibuk")
       if (res.status < 500 || res.status >= 600 || attempt === 2) throw lastErr;
       await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     } catch (e) {
       clearTimeout(timer);
       if (e.name === 'AbortError') {
-        lastErr = new Error(`Timeout 15s — [${src}] ${path}`);
-        lastErr.status = 0; lastErr.source = src; lastErr.endpoint = path;
+        lastErr = new Error(`Timeout 15s — [${src}] ${finalPath}`);
+        lastErr.status = 0; lastErr.source = src; lastErr.endpoint = finalPath;
         if (attempt === 2) throw lastErr;
         await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
         continue;
@@ -1451,6 +1456,12 @@ function skeletonGrid(n = 12) {
   return html;
 }
 
+// Shared "ภาษาไทย" detector — ใช้ทั้ง badge บนปก + filter chip (กัน drift)
+function isThaiDubKeyword(title) {
+  const t = String(title || '');
+  return /พากย์/.test(t) || t.toLowerCase().includes('thai dub');
+}
+
 function dramaCard(d) {
   const rawId = String(d.series_id || d.bookId || '');
   // ซ่อนซีรีส์ที่ admin ตั้ง hidden ไว้ (admin ยังเห็นจาก backend แต่ frontend filter หมดทุก role)
@@ -1466,8 +1477,8 @@ function dramaCard(d) {
   // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
   // DramaWave/ShortMax = แพลตฟอร์ม "ซับไทย" — title มี Thai chars = SUBTHAI (ไม่ใช่พากย์)
   const hasThaiChars = /[฀-๿]/.test(title);
-  const nativeSubThaiSource = (src === 'dramawave' || src === 'shortmax' || src === 'netshort') && hasThaiChars;
-  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || title.includes('พากย์เสียง') || tLower.includes('thai dub');
+  const nativeSubThaiSource = (src === 'dramawave' || src === 'shortmax') && hasThaiChars;
+  const isThaiDub = isThaiDubKeyword(title);
   const isSubThai = !isThaiDub && (nativeSubThaiSource || tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
   const isNew = _newBookIds[src]?.has(rawId);
   const newBadge = isNew
@@ -1480,6 +1491,10 @@ function dramaCard(d) {
       ? `<div class="absolute ${langTop} left-2 px-2 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded shadow">SUBTHAI</div>`
       : '';
   const srcBadge = `<div class="absolute top-2 right-2 px-2 py-0.5 ${SOURCE_BADGE_CLS[src] || 'bg-zinc-700'} text-white text-[10px] font-bold rounded shadow">${escapeHtml(SOURCE_LABELS[src] || src.toUpperCase())}</div>`;
+  const hideCount = src === 'netshort' && !n;
+  const metaLine = hideCount
+    ? (firstGenre ? `<div class="text-[11px] mt-0.5 glow-text text-zinc-300">${escapeHtml(firstGenre)}</div>` : '')
+    : `<div class="text-[11px] mt-0.5 glow-text"><span class="text-amber-300 font-bold">🎬 ${n}</span><span class="text-zinc-300"> ตอน${firstGenre ? ' • ' + escapeHtml(firstGenre) : ''}</span></div>`;
   return `
     <a href="/detail?bookId=${id}${n ? `&n=${n}` : ''}${srcQ}" class="card cursor-pointer block">
       <div class="relative card-img rounded-lg overflow-hidden bg-zinc-900">
@@ -1490,7 +1505,7 @@ function dramaCard(d) {
         ${srcBadge}
         <div class="absolute bottom-2 left-2 right-2">
           <div class="text-white font-bold text-sm leading-tight glow-text line-clamp-2">${escapeHtml(title)}</div>
-          <div class="text-[11px] mt-0.5 glow-text"><span class="text-amber-300 font-bold">🎬 ${n}</span><span class="text-zinc-300"> ตอน${firstGenre ? ' • ' + escapeHtml(firstGenre) : ''}</span></div>
+          ${metaLine}
         </div>
       </div>
     </a>`;
@@ -1621,11 +1636,17 @@ async function initHomePage() {
   const size = 50;
   // Per-source endpoint mapping — Melolo /search ไม่รองรับ keyword Thai + ไม่มี genre → ใช้ /list + client filter
   const dList = p => `/list?page=${p}&page_size=${size}`;
-  const dThaiKeyword = encodeURIComponent('พากย์ไทย');
+  const dThaiKeyword = encodeURIComponent('พากย์');
   const dChineseKeyword = encodeURIComponent('จีน');
   const dKoreanKeyword = encodeURIComponent('เกาหลี');
   const dJapaneseKeyword = encodeURIComponent('ญี่ปุ่น');
-  const thaiTitleFilter = it => /\(พากย์\)|พากย์ไทย/.test(it.title || it.bookName || '');
+  const thaiTitleFilter = it => {
+    const t = it.title || it.bookName || '';
+    if (isThaiDubKeyword(t)) return true;
+    // native Thai-title sources: title เป็นไทย → include ใน filter (แม้ไม่มี "พากย์" คีย์เวิร์ด)
+    if (['dramawave', 'shortmax', 'netshort'].includes(it.__source) && /[฀-๿]/.test(t)) return true;
+    return false;
+  };
   const chineseTitleFilter = it => /จีน|chinese|中国|中文/i.test(it.title || it.bookName || '');
   const koreanTitleFilter = it => /เกาหลี|korean|한국/i.test(it.title || it.bookName || '');
   const japaneseTitleFilter = it => /ญี่ปุ่น|japanese|日本/i.test(it.title || it.bookName || '');
