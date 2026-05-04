@@ -1460,14 +1460,14 @@ function dramaCard(d) {
   const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
   const title = d.title || d.bookName || '';
   const cover = d.cover || d.coverWap || '';
-  const n = d.episode_count || d.chapterCount || 0;
+  const n = d.episode_count || d.chapterCount || d.totalEpisode || 0;
   const firstGenre = (d.genre || '').split(',')[0].trim();
   const tLower = title.toLowerCase();
   // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
   // DramaWave/ShortMax = แพลตฟอร์ม "ซับไทย" — title มี Thai chars = SUBTHAI (ไม่ใช่พากย์)
   const hasThaiChars = /[฀-๿]/.test(title);
-  const nativeSubThaiSource = (src === 'dramawave' || src === 'shortmax') && hasThaiChars;
-  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || tLower.includes('thai dub');
+  const nativeSubThaiSource = (src === 'dramawave' || src === 'shortmax' || src === 'netshort') && hasThaiChars;
+  const isThaiDub = title.includes('พากย์ไทย') || title.includes('(พากย์)') || title.includes('พากย์เสียง') || tLower.includes('thai dub');
   const isSubThai = !isThaiDub && (nativeSubThaiSource || tLower.includes('subthai') || tLower.includes('sub thai') || tLower.includes('ซับไทย'));
   const isNew = _newBookIds[src]?.has(rawId);
   const newBadge = isNew
