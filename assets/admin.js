@@ -1811,15 +1811,15 @@ async function renderSeenBooksTab(c) {
 // ---------- API Sources (registry สำหรับ admin จัดการ API หนังต่างๆ) ----------
 const _ADAPTERS = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
 const _ENDPOINT_FIELDS = [
-  { k: 'list',        label: 'list',        hint: 'รายการทั้งหมด (ใช้ใน home)', vars: '{page} {page_size} {locale}' },
-  { k: 'search',      label: 'search',      hint: 'ค้นหา',                       vars: '{keyword} {page} {page_size} {locale}' },
-  { k: 'detail',      label: 'detail',      hint: 'ข้อมูลซีรีส์',                  vars: '{series_id} {locale}' },
-  { k: 'alleps',      label: 'alleps',      hint: 'list ตอนทั้งหมด (เว้นว่างถ้า extract จาก detail)', vars: '{series_id} {locale}' },
-  { k: 'genres',      label: 'genres',      hint: 'list หมวดหมู่',                 vars: '{locale}' },
-  { k: 'genre',       label: 'genre',       hint: 'list ตาม genre',              vars: '{genre_id} {page} {page_size} {locale}' },
-  { k: 'genreSearch', label: 'genreSearch', hint: 'ค้นหาภายใน genre',            vars: '{genre_id} {keyword} {page} {page_size} {locale}' },
-  { k: 'locales',     label: 'locales',     hint: 'list ภาษาที่มี (ใช้กับ locale picker)', vars: '(ไม่มี)' },
-  { k: 'video',       label: 'video',       hint: 'URL ตอน (lazy fetch ตอนเล่น เว้นว่างถ้า URL อยู่ใน alleps แล้ว)', vars: '{series_id} {ep} {locale}' },
+  { k: 'list',        label: 'list — รายการทั้งหมด',   hint: 'รายการทั้งหมด (ใช้ใน home)', vars: '{page} {page_size} {locale}' },
+  { k: 'search',      label: 'search — ค้นหา',         hint: 'ค้นหาจากคำค้น',                vars: '{keyword} {page} {page_size} {locale}' },
+  { k: 'detail',      label: 'detail — รายละเอียด',   hint: 'ข้อมูลซีรีส์',                  vars: '{series_id} {locale}' },
+  { k: 'alleps',      label: 'alleps — ตอนทั้งหมด',    hint: 'list ตอนทั้งหมด (เว้นว่างถ้า extract จาก detail)', vars: '{series_id} {locale}' },
+  { k: 'genres',      label: 'genres — หมวดหมู่',      hint: 'list หมวดหมู่',                 vars: '{locale}' },
+  { k: 'genre',       label: 'genre — ตาม genre',      hint: 'list ตาม genre',              vars: '{genre_id} {page} {page_size} {locale}' },
+  { k: 'genreSearch', label: 'genreSearch — ค้นใน genre', hint: 'ค้นหาภายใน genre',        vars: '{genre_id} {keyword} {page} {page_size} {locale}' },
+  { k: 'locales',     label: 'locales — ภาษา',         hint: 'list ภาษาที่มี (ใช้กับ locale picker)', vars: '(ไม่มี)' },
+  { k: 'video',       label: 'video — URL ตอน',        hint: 'URL ตอน (lazy fetch ตอนเล่น เว้นว่างถ้า URL อยู่ใน alleps แล้ว)', vars: '{series_id} {ep} หรือ {episode} {locale}' },
 ];
 const _BADGE_OPTIONS = [
   { cls: 'bg-red-600',     label: 'แดง' },
@@ -2029,13 +2029,13 @@ function openApiSourceForm(source, c) {
           <legend class="px-2 text-xs text-zinc-400 font-bold">① ข้อมูลทั่วไป</legend>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label class="text-xs text-zinc-400">Key (/proxy/&lt;key&gt;/...)</label>
+              <label class="text-xs text-zinc-400">คีย์ (/proxy/&lt;key&gt;/...)</label>
               <input name="key" type="text" value="${escapeHtml(cur.key)}" ${isEdit ? 'readonly' : ''} required pattern="[a-z0-9_-]{2,30}"
                 class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono ${isEdit ? 'opacity-60' : ''}"/>
               <p class="text-[10px] text-zinc-500 mt-0.5">a-z 0-9 _ - (2-30) แก้ไม่ได้หลังสร้าง</p>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">Label</label>
+              <label class="text-xs text-zinc-400">ชื่อแสดง (Label)</label>
               <input name="label" type="text" value="${escapeHtml(cur.label)}" required maxlength="50"
                 class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded"/>
             </div>
@@ -2046,11 +2046,11 @@ function openApiSourceForm(source, c) {
               </select>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">Adapter (response shape)</label>
+              <label class="text-xs text-zinc-400">Adapter — รูปแบบ response</label>
               <select name="adapter" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
                 ${_ADAPTERS.map(a => `<option value="${a}" ${a === cur.adapter ? 'selected' : ''}>${a}</option>`).join('')}
               </select>
-              <p class="text-[10px] text-zinc-500 mt-0.5">กำหนด response normalization + auto-fill endpoints preset</p>
+              <p class="text-[10px] text-zinc-500 mt-0.5">กำหนดรูปแบบการอ่าน response + เติมเส้นทาง preset อัตโนมัติ</p>
             </div>
           </div>
           <label class="flex items-center gap-2 px-3 py-2 bg-zinc-950/50 rounded">
@@ -2061,21 +2061,21 @@ function openApiSourceForm(source, c) {
 
         <!-- ===== 2. Server / Token ===== -->
         <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-3">
-          <legend class="px-2 text-xs text-zinc-400 font-bold">② Host / Base / Token</legend>
+          <legend class="px-2 text-xs text-zinc-400 font-bold">② เซิร์ฟเวอร์ / Base Path / Token</legend>
           <div>
-            <label class="text-xs text-zinc-400">Host</label>
+            <label class="text-xs text-zinc-400">โฮสต์ (Host)</label>
             <input name="host" type="text" value="${escapeHtml(cur.host)}" required maxlength="200"
               class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
           </div>
           <div>
-            <label class="text-xs text-zinc-400">Base Path (prefix prepend ก่อน endpoint)</label>
+            <label class="text-xs text-zinc-400">Base Path (ข้อความเติมหน้า endpoint)</label>
             <input name="basePath" type="text" value="${escapeHtml(cur.basePath)}" maxlength="200"
               placeholder="/api/platform/&lt;key&gt;"
               class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
-            <p class="text-[10px] text-zinc-500 mt-0.5">Final URL = https://&lt;host&gt;&lt;basePath&gt;&lt;endpoint&gt;</p>
+            <p class="text-[10px] text-zinc-500 mt-0.5">URL สุดท้าย = https://&lt;host&gt;&lt;basePath&gt;&lt;endpoint&gt; — เว้นว่างถ้าต้องใส่ path เต็มในแต่ละ endpoint</p>
           </div>
           <div>
-            <label class="text-xs text-zinc-400">Token env var (ต้องตั้งใน Render)</label>
+            <label class="text-xs text-zinc-400">ชื่อ env ของ Token (ต้องตั้งใน Render)</label>
             <input name="tokenEnv" type="text" value="${escapeHtml(cur.tokenEnv)}" maxlength="100" pattern="[A-Z0-9_]*"
               placeholder="SERIESJEEN_TOKEN"
               class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
@@ -2084,17 +2084,17 @@ function openApiSourceForm(source, c) {
 
         <!-- ===== 3. Endpoint templates ===== -->
         <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-2">
-          <legend class="px-2 text-xs text-zinc-400 font-bold">③ Endpoint templates (placeholder ในวงเล็บ {} จะถูกแทนตอนเรียก)</legend>
+          <legend class="px-2 text-xs text-zinc-400 font-bold">③ เส้นทาง API (placeholder ในวงเล็บ {} จะแทนค่าตอนเรียก)</legend>
           <div class="flex items-center gap-2 mb-1">
             <button type="button" id="apSrcResetEps" class="text-[11px] px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded">↺ รีเซ็ตตาม adapter ที่เลือก</button>
-            <span class="text-[10px] text-zinc-500">ใช้ได้: {page} {page_size} {keyword} {series_id} {genre_id} {ep} {locale}</span>
+            <span class="text-[10px] text-zinc-500">ใช้ได้: {page} {page_size} {keyword} {series_id} {genre_id} {ep} หรือ {episode} {locale}</span>
           </div>
           <div class="space-y-2">
             ${_ENDPOINT_FIELDS.map(f => `
-              <div class="grid grid-cols-[90px_1fr_auto] gap-2 items-start">
+              <div class="grid grid-cols-[160px_1fr_auto] gap-2 items-start">
                 <div class="pt-1.5">
-                  <div class="text-xs font-mono text-emerald-300">${f.label}</div>
-                  <div class="text-[10px] text-zinc-500 leading-tight">${escapeHtml(f.vars)}</div>
+                  <div class="text-xs font-mono text-emerald-300 leading-tight">${f.label}</div>
+                  <div class="text-[10px] text-zinc-500 leading-tight mt-0.5">${escapeHtml(f.vars)}</div>
                 </div>
                 <div>
                   <input name="ep_${f.k}" type="text" value="${escapeHtml(curEps[f.k] || '')}" maxlength="500"
@@ -2129,31 +2129,31 @@ function openApiSourceForm(source, c) {
 
         <!-- ===== 5. Field mapping (custom adapter) ===== -->
         <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-2">
-          <legend class="px-2 text-xs text-zinc-400 font-bold">⑤ Field mapping (เว้นว่าง = ใช้ adapter preset)</legend>
-          <p class="text-[10px] text-zinc-500">ระบุ key ของ JSON response เพื่อ override การ parse — ใช้เมื่อ API ส่ง shape ที่ adapter preset อ่านไม่ได้ ใส่ค่าทับเฉพาะ field ที่ต้อง</p>
+          <legend class="px-2 text-xs text-zinc-400 font-bold">⑤ การอ่าน response (เว้นว่าง = ใช้ค่าเริ่มต้นของ adapter)</legend>
+          <p class="text-[10px] text-zinc-500">ระบุชื่อ field ใน JSON response เพื่อ override การอ่าน — ใช้เฉพาะเมื่อ API ส่ง shape ที่ adapter preset อ่านไม่ได้ ใส่เฉพาะช่องที่ต้อง</p>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div>
-              <label class="text-xs text-zinc-400">itemsPath <span class="text-zinc-600">(dotted)</span></label>
+              <label class="text-xs text-zinc-400">itemsPath — ตำแหน่ง array รายการ <span class="text-zinc-600">(ใช้จุดคั่น)</span></label>
               <input name="fm_itemsPath" type="text" value="${escapeHtml(curFm.itemsPath || '')}" maxlength="100" placeholder="data.records"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">idField</label>
+              <label class="text-xs text-zinc-400">idField — ชื่อ field ของ ID ซีรีส์</label>
               <input name="fm_idField" type="text" value="${escapeHtml(curFm.idField || '')}" maxlength="100" placeholder="series_id"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">titleField</label>
+              <label class="text-xs text-zinc-400">titleField — ชื่อ field ของชื่อเรื่อง</label>
               <input name="fm_titleField" type="text" value="${escapeHtml(curFm.titleField || '')}" maxlength="100" placeholder="title"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">coverField</label>
+              <label class="text-xs text-zinc-400">coverField — ชื่อ field ของภาพปก</label>
               <input name="fm_coverField" type="text" value="${escapeHtml(curFm.coverField || '')}" maxlength="100" placeholder="cover"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>
             <div>
-              <label class="text-xs text-zinc-400">countField <span class="text-zinc-600">(จำนวนตอน)</span></label>
+              <label class="text-xs text-zinc-400">countField — ชื่อ field ของจำนวนตอน</label>
               <input name="fm_countField" type="text" value="${escapeHtml(curFm.countField || '')}" maxlength="100" placeholder="episode_count"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>

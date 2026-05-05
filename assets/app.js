@@ -19,8 +19,10 @@ const _FALLBACK_ENDPOINTS = {
   netshort:  { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/drama/{series_id}', alleps:'', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'/watch/{series_id}/{ep}' },
 };
 function _subVars(tpl, vars) {
+  const aliases = { episode: 'ep' };
   return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => {
-    const v = vars && vars[k];
+    const key = aliases[k] || k;
+    const v = vars && vars[key];
     return v == null || v === '' ? '' : encodeURIComponent(String(v));
   });
 }

@@ -125,8 +125,10 @@ function endpointsFor(adapter) {
   return { ...base };
 }
 function substituteVars(template, vars) {
+  const aliases = { episode: 'ep' };
   return String(template || '').replace(/\{(\w+)\}/g, (_, k) => {
-    const v = vars && vars[k];
+    const key = aliases[k] || k;
+    const v = vars && vars[key];
     return v == null || v === '' ? '' : encodeURIComponent(String(v));
   });
 }
