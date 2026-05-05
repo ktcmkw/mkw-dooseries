@@ -2237,7 +2237,9 @@ async function handleApi(req, res, pathname, query) {
     }
     try {
       const t0 = Date.now();
-      const payload = await httpsGetSource(src, '/list?page=1&page_size=1');
+      const listTpl = src.endpoints?.list || endpointsFor(src.adapter || src.key).list || '/list?page={page}&page_size={page_size}';
+      const subPath = substituteVars(listTpl, { page: 1, page_size: 1 });
+      const payload = await httpsGetSource(src, subPath);
       const items = Array.isArray(payload) ? payload : (payload?.items || []);
       return json(res, 200, { ok: true, durationMs: Date.now() - t0, items: items.length, sample: items[0] || null });
     } catch (e) {
@@ -2323,7 +2325,9 @@ function httpsGetSource(src, subPath) {
 }
 
 async function pollSourceForNewBooks(src, data) {
-  const payload = await httpsGetSource(src, `/list?page=1&page_size=50`);
+  const listTpl = src.endpoints?.list || endpointsFor(src.adapter || src.key).list || '/list?page={page}&page_size={page_size}';
+  const subPath = substituteVars(listTpl, { page: 1, page_size: 50 });
+  const payload = await httpsGetSource(src, subPath);
   const raw = Array.isArray(payload) ? payload : (payload?.items || []);
   const items = raw.map(x => ({
     bookId: String(x.series_id || x.bookId || x.id || ''),
