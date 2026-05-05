@@ -3,14 +3,16 @@
 // API: seriesjeen (via /proxy/api/platform/<source>/*) + local backend (/api/*)
 // ============================================================
 
-const API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+// Source registry — เริ่มต้นด้วย 5 sources เป็น fallback
+// publicConfig.load() จะ overwrite ตาม data.apiSources จาก /api/public-config (admin จัดการที่ /admin → 🎬 API Sources)
+let API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
 const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave', netshort: 'Netshort' };
 const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500', shortmax: 'bg-blue-600', dramawave: 'bg-purple-600', netshort: 'bg-emerald-600' };
 const PAGE_SIZE = 40;
 const BRAND = 'MKW Movies';
 
 // NEW badge — populated after /api/books/ingest (per source, bookIds ที่เป็น NEW)
-const _newBookIds = { dramabox: new Set(), melolo: new Set(), shortmax: new Set(), dramawave: new Set(), netshort: new Set() };
+const _newBookIds = {};
 async function ingestAndMarkNew(res) {
   try {
     const buckets = res?._multi && Array.isArray(res._buckets) ? res._buckets : null;
@@ -827,6 +829,18 @@ const publicConfig = {
       if (r.ok) this.data = await r.json();
     } catch {}
     if (!this.data) this.data = { freeMode: { enabled: false, message: '' }, announcement: { enabled: false }, maintenance: { enabled: false }, hiddenBooks: [] };
+    // Overwrite source registry จาก server (admin จัดการได้)
+    if (Array.isArray(this.data.apiSources) && this.data.apiSources.length) {
+      const list = this.data.apiSources;
+      API_SOURCES = list.map(s => s.key);
+      // Clear & refill (object refs unchanged → dependent code ที่อ้างอิงตรงๆ ยังทำงานได้)
+      Object.keys(SOURCE_LABELS).forEach(k => delete SOURCE_LABELS[k]);
+      Object.keys(SOURCE_BADGE_CLS).forEach(k => delete SOURCE_BADGE_CLS[k]);
+      for (const s of list) {
+        SOURCE_LABELS[s.key] = s.label || s.key;
+        SOURCE_BADGE_CLS[s.key] = s.badgeClass || 'bg-zinc-700';
+      }
+    }
     return this.data;
   },
   isFreeMode() { return !!this.data?.freeMode?.enabled; },
@@ -1652,47 +1666,43 @@ async function initHomePage() {
   const japaneseTitleFilter = it => /ญี่ปุ่น|japanese|日本/i.test(it.title || it.bookName || '');
   const filters = [
     { key: 'all',    label: 'ทั้งหมด',
-      spec: p => ({ dramabox: dList(p), melolo: dList(p), shortmax: dList(p), dramawave: dList(p), netshort: dList(p) }) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, dList(p)])) },
     { key: 'thai',   label: '🇹🇭 พากย์ไทย',
-      spec: p => ({
-        dramabox: `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`,
-        melolo: dList(p),
-        shortmax: dList(p),
-        dramawave: dList(p),
-        netshort: dList(p),
-        filter: { melolo: thaiTitleFilter, shortmax: thaiTitleFilter, dramawave: thaiTitleFilter, netshort: thaiTitleFilter },
-      }) },
+      spec: p => {
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`;
+        const filter = {};
+        for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = thaiTitleFilter;
+        return { ...out, filter };
+      } },
     { key: 'chinese', label: '🇨🇳 จีน',
-      spec: p => ({
-        dramabox: `/search?keyword=${dChineseKeyword}&page=${p}&page_size=${size}`,
-        melolo: dList(p),
-        shortmax: dList(p),
-        dramawave: dList(p),
-        netshort: dList(p),
-        filter: { melolo: chineseTitleFilter, shortmax: chineseTitleFilter, dramawave: chineseTitleFilter, netshort: chineseTitleFilter },
-      }) },
+      spec: p => {
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dChineseKeyword}&page=${p}&page_size=${size}`;
+        const filter = {};
+        for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = chineseTitleFilter;
+        return { ...out, filter };
+      } },
     { key: 'korean', label: '🇰🇷 เกาหลี',
-      spec: p => ({
-        dramabox: `/search?keyword=${dKoreanKeyword}&page=${p}&page_size=${size}`,
-        melolo: dList(p),
-        shortmax: dList(p),
-        dramawave: dList(p),
-        netshort: dList(p),
-        filter: { melolo: koreanTitleFilter, shortmax: koreanTitleFilter, dramawave: koreanTitleFilter, netshort: koreanTitleFilter },
-      }) },
+      spec: p => {
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dKoreanKeyword}&page=${p}&page_size=${size}`;
+        const filter = {};
+        for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = koreanTitleFilter;
+        return { ...out, filter };
+      } },
     { key: 'japanese', label: '🇯🇵 ญี่ปุ่น',
-      spec: p => ({
-        dramabox: `/search?keyword=${dJapaneseKeyword}&page=${p}&page_size=${size}`,
-        melolo: dList(p),
-        shortmax: dList(p),
-        dramawave: dList(p),
-        netshort: dList(p),
-        filter: { melolo: japaneseTitleFilter, shortmax: japaneseTitleFilter, dramawave: japaneseTitleFilter, netshort: japaneseTitleFilter },
-      }) },
+      spec: p => {
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dJapaneseKeyword}&page=${p}&page_size=${size}`;
+        const filter = {};
+        for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = japaneseTitleFilter;
+        return { ...out, filter };
+      } },
     { key: 'anime',  label: '🎌 การ์ตูน',
-      spec: p => ({ dramabox: `/genre/3744?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null, netshort: null }) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? `/genre/3744?page=${p}&page_size=${size}` : null])) },
     { key: 'vip',    label: '💎 VIP',
-      spec: p => ({ dramabox: `/genre/1265?page=${p}&page_size=${size}`, melolo: null, shortmax: null, dramawave: null, netshort: null }) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? `/genre/1265?page=${p}&page_size=${size}` : null])) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 

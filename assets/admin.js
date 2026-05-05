@@ -35,6 +35,7 @@ async function initAdminPage() {
       <button data-tab="points"    class="tab-btn px-4 py-2 text-sm rounded-t-lg">💎 Point & แพ็กเกจ</button>
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
       <button data-tab="seenbooks" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🆕 หนังใหม่</button>
+      <button data-tab="apisources" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🎬 API Sources</button>
     </div>
     <div id="tabContent"></div>
   `);
@@ -72,6 +73,7 @@ async function loadTab(tab) {
     if (tab === 'points')    return renderPointsTab(c);
     if (tab === 'loginlog')  return renderLoginLogTab(c);
     if (tab === 'seenbooks') return renderSeenBooksTab(c);
+    if (tab === 'apisources') return renderApiSourcesTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
   }
@@ -1804,4 +1806,222 @@ async function renderSeenBooksTab(c) {
     try { await backendDelete(`/api/admin/seen-books/${encodeURIComponent(src)}/${encodeURIComponent(bid)}`); renderSeenBooksTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   });
+}
+
+// ---------- API Sources (registry สำหรับ admin จัดการ API หนังต่างๆ) ----------
+const _ADAPTERS = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+const _BADGE_OPTIONS = [
+  { cls: 'bg-red-600',     label: 'แดง' },
+  { cls: 'bg-orange-600',  label: 'ส้ม' },
+  { cls: 'bg-amber-500',   label: 'เหลือง-ส้ม' },
+  { cls: 'bg-yellow-500',  label: 'เหลือง' },
+  { cls: 'bg-emerald-600', label: 'เขียว' },
+  { cls: 'bg-teal-600',    label: 'เขียว-ฟ้า' },
+  { cls: 'bg-blue-600',    label: 'น้ำเงิน' },
+  { cls: 'bg-indigo-600',  label: 'ม่วง-น้ำเงิน' },
+  { cls: 'bg-purple-600',  label: 'ม่วง' },
+  { cls: 'bg-pink-600',    label: 'ชมพู' },
+  { cls: 'bg-zinc-700',    label: 'เทา' },
+];
+
+async function renderApiSourcesTab(c) {
+  const { sources } = await backendGet('/api/admin/api-sources');
+  c.innerHTML = `
+    <div class="flex items-center gap-3 mb-3 flex-wrap">
+      <div class="flex-1 min-w-0">
+        <h3 class="font-bold text-zinc-200">🎬 API Sources Registry</h3>
+        <p class="text-xs text-zinc-500 mt-1 leading-relaxed">
+          จัดการ API หนังที่เว็บใช้ดึงข้อมูล — เปิด/ปิด แก้ไข หรือเพิ่ม source ใหม่ <strong class="text-zinc-300">เปลี่ยนแล้วมีผลทันที</strong> ไม่ต้อง redeploy<br/>
+          <span class="text-amber-300">⚠ Token ต้องตั้งเป็น env var ใน Render dashboard เท่านั้น (ระบุชื่อ env ในฟอร์ม) — ไม่เก็บค่า token ใน data store</span>
+        </p>
+      </div>
+      <button id="apiSrcAdd" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded shrink-0">+ เพิ่ม Source ใหม่</button>
+    </div>
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-x-auto">
+      <table class="w-full text-sm min-w-[1000px]">
+        <thead class="bg-zinc-800/50 text-zinc-400 text-xs">
+          <tr>
+            <th class="px-3 py-3 text-left">Key</th>
+            <th class="px-3 py-3 text-left">Label / Badge</th>
+            <th class="px-3 py-3 text-left">Host + basePath</th>
+            <th class="px-3 py-3 text-left">Token env</th>
+            <th class="px-3 py-3 text-left">Adapter</th>
+            <th class="px-3 py-3 text-center">เปิด</th>
+            <th class="px-3 py-3 text-right">จัดการ</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sources.length === 0
+            ? `<tr><td colspan="7" class="px-3 py-10 text-center text-zinc-500">ยังไม่มี source — กดปุ่ม "+ เพิ่ม Source ใหม่"</td></tr>`
+            : sources.map(s => `
+            <tr class="border-t border-zinc-800" data-key="${escapeHtml(s.key)}">
+              <td class="px-3 py-3 font-mono text-xs text-zinc-300">${escapeHtml(s.key)}</td>
+              <td class="px-3 py-3">
+                <span class="px-2 py-0.5 ${escapeHtml(s.badgeClass)} text-white text-[10px] font-bold rounded">${escapeHtml(s.label)}</span>
+              </td>
+              <td class="px-3 py-3 text-xs">
+                <div class="text-zinc-300 font-mono">${escapeHtml(s.host)}</div>
+                <div class="text-zinc-500 font-mono">${escapeHtml(s.basePath || '/')}</div>
+              </td>
+              <td class="px-3 py-3 text-xs">
+                <span class="font-mono text-zinc-300">${escapeHtml(s.tokenEnv || '—')}</span>
+                ${s.tokenAvailable
+                  ? '<span class="ml-1 text-emerald-400" title="env มีค่า">✓</span>'
+                  : '<span class="ml-1 text-red-400" title="env ว่าง">✕</span>'}
+              </td>
+              <td class="px-3 py-3 text-xs font-mono text-zinc-400">${escapeHtml(s.adapter)}</td>
+              <td class="px-3 py-3 text-center">
+                <label class="inline-flex items-center cursor-pointer">
+                  <input type="checkbox" data-toggle-key="${escapeHtml(s.key)}" ${s.enabled ? 'checked' : ''} class="w-4 h-4 accent-emerald-500"/>
+                </label>
+              </td>
+              <td class="px-3 py-3 text-right whitespace-nowrap">
+                <button data-test-key="${escapeHtml(s.key)}" class="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 rounded mr-1" title="ทดสอบ /list">🔌 Test</button>
+                <button data-edit-key="${escapeHtml(s.key)}" class="px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded mr-1">✏ แก้</button>
+                <button data-del-key="${escapeHtml(s.key)}" class="px-2 py-1 text-xs bg-red-600 hover:bg-red-500 text-white rounded">🗑 ลบ</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div id="apiSrcResult" class="mt-3 text-xs"></div>
+  `;
+
+  $('#apiSrcAdd').onclick = () => openApiSourceForm(null, c);
+  $$('[data-edit-key]').forEach(b => b.onclick = () => {
+    const key = b.dataset.editKey;
+    openApiSourceForm(sources.find(s => s.key === key) || null, c);
+  });
+  $$('[data-del-key]').forEach(b => b.onclick = async () => {
+    const key = b.dataset.delKey;
+    if (!confirm(`ลบ source "${key}" ออกจาก registry?\n(ไม่กระทบ data ตอนเก่าที่ดูค้างไว้ แต่เว็บจะไม่แสดง source นี้อีก)`)) return;
+    try { await backendDelete(`/api/admin/api-sources/${encodeURIComponent(key)}`); renderApiSourcesTab(c); }
+    catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('[data-toggle-key]').forEach(cb => cb.onchange = async () => {
+    const key = cb.dataset.toggleKey;
+    const src = sources.find(s => s.key === key);
+    if (!src) return;
+    try {
+      await backendPost('/api/admin/api-sources', { ...src, enabled: cb.checked });
+      $('#apiSrcResult').innerHTML = `<span class="text-emerald-400">✓ ${escapeHtml(key)} → ${cb.checked ? 'เปิด' : 'ปิด'} (มีผลทันที)</span>`;
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); cb.checked = !cb.checked; }
+  });
+  $$('[data-test-key]').forEach(b => b.onclick = async () => {
+    const key = b.dataset.testKey;
+    const orig = b.innerHTML;
+    b.disabled = true; b.innerHTML = '⏳';
+    try {
+      const r = await backendPost(`/api/admin/api-sources/${encodeURIComponent(key)}/test`, {});
+      const out = $('#apiSrcResult');
+      if (r.ok) {
+        out.innerHTML = `<span class="text-emerald-400">✓ ${escapeHtml(key)} ทำงานได้ (${r.durationMs}ms, ตัวอย่าง ${r.items} รายการ)</span>`;
+      } else {
+        out.innerHTML = `<span class="text-red-400">✕ ${escapeHtml(key)} ${escapeHtml(r.error || '')}: ${escapeHtml(r.message || '')}</span>`;
+      }
+    } catch (e) {
+      $('#apiSrcResult').innerHTML = `<span class="text-red-400">✕ ${escapeHtml(e.message)}</span>`;
+    } finally { b.disabled = false; b.innerHTML = orig; }
+  });
+}
+
+function openApiSourceForm(source, c) {
+  const isEdit = !!source;
+  const cur = source || { key: '', label: '', badgeClass: 'bg-zinc-700', enabled: true,
+    host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox' };
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center p-4';
+  overlay.style.background = 'rgba(0,0,0,0.75)';
+  overlay.innerHTML = `
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+      <div class="flex items-center justify-between p-4 border-b border-zinc-800">
+        <h4 class="font-black text-lg">${isEdit ? '✏ แก้ไข' : '+ เพิ่ม'} API Source</h4>
+        <button class="closeBtn w-8 h-8 flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 rounded-full text-zinc-300">✕</button>
+      </div>
+      <form id="apiSrcForm" class="p-4 space-y-3 text-sm">
+        <div>
+          <label class="text-xs text-zinc-400">Key (ใช้ใน URL: /proxy/&lt;key&gt;/...)</label>
+          <input name="key" type="text" value="${escapeHtml(cur.key)}" ${isEdit ? 'readonly' : ''} required pattern="[a-z0-9_-]{2,30}"
+            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono ${isEdit ? 'opacity-60' : ''}"/>
+          <p class="text-[10px] text-zinc-500 mt-0.5">a-z 0-9 _ - เท่านั้น (2-30 ตัว) — แก้ไม่ได้หลังสร้าง</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-zinc-400">Label (ชื่อแสดง)</label>
+            <input name="label" type="text" value="${escapeHtml(cur.label)}" required maxlength="50"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded"/>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400">สี Badge</label>
+            <select name="badgeClass" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
+              ${_BADGE_OPTIONS.map(o => `<option value="${o.cls}" ${o.cls === cur.badgeClass ? 'selected' : ''}>${o.label}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">Host (เช่น api.seriesjeen.online)</label>
+          <input name="host" type="text" value="${escapeHtml(cur.host)}" required maxlength="200"
+            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">Base Path (prefix ที่ server prepend ก่อน forward)</label>
+          <input name="basePath" type="text" value="${escapeHtml(cur.basePath)}" maxlength="200"
+            placeholder="/api/platform/&lt;key&gt;"
+            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+          <p class="text-[10px] text-zinc-500 mt-0.5">Frontend เรียก /list, /search, /detail/{id} ฯลฯ — server จะ prepend basePath ให้</p>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-xs text-zinc-400">Token env var</label>
+            <input name="tokenEnv" type="text" value="${escapeHtml(cur.tokenEnv)}" maxlength="100" pattern="[A-Z0-9_]*"
+              placeholder="SERIESJEEN_TOKEN"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+            <p class="text-[10px] text-zinc-500 mt-0.5">ตั้งใน Render → Environment</p>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400">Adapter (response shape)</label>
+            <select name="adapter" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
+              ${_ADAPTERS.map(a => `<option value="${a}" ${a === cur.adapter ? 'selected' : ''}>${a}</option>`).join('')}
+            </select>
+            <p class="text-[10px] text-zinc-500 mt-0.5">ถ้า response ไม่ตรง shape ทั้ง 5 = ต้องเพิ่ม adapter ในโค้ด</p>
+          </div>
+        </div>
+        <label class="flex items-center gap-2 px-3 py-2 bg-zinc-950/50 rounded">
+          <input name="enabled" type="checkbox" ${cur.enabled ? 'checked' : ''} class="w-4 h-4 accent-emerald-500"/>
+          <span>เปิดใช้งาน (uncheck = ซ่อนจากเว็บ)</span>
+        </label>
+        <div id="apiSrcFormMsg" class="text-xs"></div>
+        <div class="flex gap-2 justify-end pt-2">
+          <button type="button" class="closeBtn px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded">ยกเลิก</button>
+          <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded">${isEdit ? 'บันทึก' : 'เพิ่ม'}</button>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  overlay.querySelectorAll('.closeBtn').forEach(b => b.onclick = close);
+  overlay.querySelector('#apiSrcForm').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    const body = {
+      key: f.key.value.trim().toLowerCase(),
+      label: f.label.value.trim(),
+      badgeClass: f.badgeClass.value,
+      host: f.host.value.trim(),
+      basePath: f.basePath.value.trim(),
+      tokenEnv: f.tokenEnv.value.trim().toUpperCase(),
+      adapter: f.adapter.value,
+      enabled: f.enabled.checked,
+    };
+    const msgEl = overlay.querySelector('#apiSrcFormMsg');
+    try {
+      const r = await backendPost('/api/admin/api-sources', body);
+      msgEl.innerHTML = `<span class="text-emerald-400">✓ บันทึกสำเร็จ${r.tokenAvailable ? '' : ' — แต่ env ' + escapeHtml(body.tokenEnv) + ' ยังว่าง'}</span>`;
+      setTimeout(() => { close(); renderApiSourcesTab(c); }, 600);
+    } catch (ex) {
+      msgEl.innerHTML = `<span class="text-red-400">✕ ${escapeHtml(ex.message)}</span>`;
+    }
+  };
 }

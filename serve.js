@@ -19,7 +19,39 @@ if (!SERIESJEEN_TOKEN) {
 }
 
 const EPISODE_COST = 1;  // MKW Coin per locked episode
-const API_SOURCES_SERVER = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+
+// ---------- API source registry helpers ----------
+// apiSources เป็น array ใน data store (admin จัดการผ่าน UI ได้)
+// แต่ละ source: { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter }
+//   - key       : unique identifier — ใช้ใน URL `/proxy/<key>/...` และ frontend SOURCE_ADAPTERS lookup
+//   - host      : hostname เช่น 'api.seriesjeen.online'
+//   - basePath  : path prefix prepend ตอน proxy เช่น '/api/platform/dramabox'
+//   - tokenEnv  : ชื่อ env var ที่ server ใช้ resolve Bearer token (เก็บฝั่ง server เท่านั้น)
+//   - adapter   : ชี้ไปที่ SOURCE_ADAPTERS key ใน frontend (response normalization)
+function getApiSources(data) {
+  return Array.isArray(data?.apiSources) ? data.apiSources : [];
+}
+function getApiSourceKeys(data, opts = {}) {
+  const onlyEnabled = opts.onlyEnabled !== false;
+  return getApiSources(data).filter(s => onlyEnabled ? s.enabled !== false : true).map(s => s.key);
+}
+function findApiSource(data, key) {
+  return getApiSources(data).find(s => s.key === key) || null;
+}
+function resolveSourceToken(src) {
+  if (!src) return '';
+  const env = src.tokenEnv || '';
+  return env ? (process.env[env] || '') : '';
+}
+function publicApiSource(s) {
+  return {
+    key: s.key,
+    label: s.label || s.key,
+    badgeClass: s.badgeClass || 'bg-zinc-700',
+    adapter: s.adapter || s.key,
+    enabled: s.enabled !== false,
+  };
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -80,6 +112,18 @@ const DEFAULT_DATA = {
   sessionClosures: {},                                        // token → { reason, at } (TTL 24h) เก็บไว้แจ้งฝั่ง client ที่ถูกเตะ
   seenBooks: {},                                              // source → bookId → { firstSeenAt, bookName, cover } (NEW badge tracking)
   lastPollAt: {},                                             // source → ISO timestamp ของ midnight poll ครั้งล่าสุด
+  apiSources: [
+    { key: 'dramabox',  label: 'DramaBox',  badgeClass: 'bg-red-600',     enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/dramabox',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox' },
+    { key: 'melolo',    label: 'Melolo',    badgeClass: 'bg-yellow-500',  enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/melolo',    tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'melolo' },
+    { key: 'shortmax',  label: 'ShortMax',  badgeClass: 'bg-blue-600',    enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/shortmax',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'shortmax' },
+    { key: 'dramawave', label: 'DramaWave', badgeClass: 'bg-purple-600',  enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/dramawave', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramawave' },
+    { key: 'netshort',  label: 'Netshort',  badgeClass: 'bg-emerald-600', enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/netshort',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'netshort' },
+  ],
 };
 
 // ---------- Data store (MongoDB ถ้ามี MONGODB_URI, ไม่งั้นใช้ data.json) ----------
@@ -461,15 +505,49 @@ function serveFile(filePath, res) {
   });
 }
 
-// ---------- Proxy to seriesjeen ----------
-function proxyToSeriesjeen(reqUrl, res) {
-  const targetPath = reqUrl.replace(/^\/proxy/, '');
+// ---------- Proxy to API source (registry-aware) ----------
+// URL pattern: `/proxy/<sourceKey>/<rest>` → `https://<host><basePath>/<rest>`
+// Backward compat: `/proxy/api/platform/<src>/<rest>` → ลองหา src ใน registry; ถ้าเจอ
+//   forward ไป `https://<src.host>/api/platform/<src>/<rest>` (path คงเดิม ignore basePath)
+async function proxyToSource(reqUrl, res) {
+  const data = await readData();
+  let src = null;
+  let finalPath = '';
+
+  // (legacy) /proxy/api/platform/<key>/<rest>
+  const mLegacy = reqUrl.match(/^\/proxy(\/api\/platform\/([^/?#]+).*)$/);
+  if (mLegacy) {
+    src = findApiSource(data, mLegacy[2]);
+    finalPath = mLegacy[1];  // คง path เดิม
+  } else {
+    // /proxy/<key>/<rest>
+    const m = reqUrl.match(/^\/proxy\/([^/?#]+)(.*)$/);
+    if (m) {
+      src = findApiSource(data, m[1]);
+      const sub = m[2] || '/';
+      finalPath = (src?.basePath || '') + (sub.startsWith('/') ? sub : '/' + sub);
+    }
+  }
+
+  if (!src) {
+    res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'source_not_found', message: 'ไม่พบ API source ในระบบ', url: reqUrl }));
+  }
+  if (src.enabled === false) {
+    res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'source_disabled', message: `API "${src.label || src.key}" ถูกปิดอยู่` }));
+  }
+  const token = resolveSourceToken(src);
+  if (!token) {
+    res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify({ error: 'token_missing', message: `ตั้ง env var "${src.tokenEnv}" ใน Render ก่อน` }));
+  }
   const options = {
-    hostname: SERIESJEEN_HOST,
-    path: targetPath,
+    hostname: src.host || SERIESJEEN_HOST,
+    path: finalPath,
     method: 'GET',
     headers: {
-      'Authorization': 'Bearer ' + SERIESJEEN_TOKEN,
+      'Authorization': 'Bearer ' + token,
       'Accept': 'application/json',
       'User-Agent': 'mkw-dooseries-proxy/1.0',
     },
@@ -482,7 +560,7 @@ function proxyToSeriesjeen(reqUrl, res) {
   });
   proxyReq.on('error', e => {
     res.writeHead(502, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: 'proxy_error', message: e.message, target: targetPath }));
+    res.end(JSON.stringify({ error: 'proxy_error', message: e.message, target: finalPath }));
   });
   proxyReq.end();
 }
@@ -612,6 +690,7 @@ async function handleApi(req, res, pathname, query) {
       },
       hiddenBooks: Object.keys(data.hiddenBooks || {}),
       trackingDisabled: !!data.disableTracking,
+      apiSources: getApiSources(data).filter(s => s.enabled !== false).map(publicApiSource),
     });
   }
 
@@ -623,7 +702,7 @@ async function handleApi(req, res, pathname, query) {
     if (!rl.ok) return badRequest(res, `ส่งถี่เกินไป ลองใหม่ใน ${rl.retryAfterSec} วินาที`);
     const body = await readBody(req);
     const source = String(body.source || '').trim();
-    if (!API_SOURCES_SERVER.includes(source)) return badRequest(res, 'source ไม่ถูกต้อง');
+    if (!getApiSourceKeys(data).includes(source)) return badRequest(res, 'source ไม่ถูกต้อง');
     const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
     data.seenBooks = data.seenBooks || {};
     data.seenBooks[source] = data.seenBooks[source] || {};
@@ -1207,7 +1286,7 @@ async function handleApi(req, res, pathname, query) {
     const sb = data.seenBooks || {};
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const out = {};
-    for (const src of API_SOURCES_SERVER) {
+    for (const src of getApiSourceKeys(data, { onlyEnabled: false })) {
       const bucket = sb[src] || {};
       const entries = Object.entries(bucket)
         .map(([bookId, info]) => ({
@@ -1230,10 +1309,10 @@ async function handleApi(req, res, pathname, query) {
     if (!requireAdmin()) return;
     const src = String(query.source || '').trim();
     data.seenBooks = data.seenBooks || {};
-    if (src && API_SOURCES_SERVER.includes(src)) {
+    if (src && getApiSourceKeys(data, { onlyEnabled: false }).includes(src)) {
       data.seenBooks[src] = {};
     } else {
-      for (const s of API_SOURCES_SERVER) data.seenBooks[s] = {};
+      for (const s of getApiSourceKeys(data, { onlyEnabled: false })) data.seenBooks[s] = {};
     }
     await writeData(data);
     return json(res, 200, { ok: true });
@@ -1244,7 +1323,7 @@ async function handleApi(req, res, pathname, query) {
     if (!requireAdmin()) return;
     const src = decodeURIComponent(mSeenDel[1]);
     const bookId = decodeURIComponent(mSeenDel[2]);
-    if (!API_SOURCES_SERVER.includes(src)) return badRequest(res, 'source ไม่ถูกต้อง');
+    if (!getApiSourceKeys(data, { onlyEnabled: false }).includes(src)) return badRequest(res, 'source ไม่ถูกต้อง');
     if (!data.seenBooks?.[src]?.[bookId]) return notFound(res);
     delete data.seenBooks[src][bookId];
     await writeData(data);
@@ -1264,7 +1343,7 @@ async function handleApi(req, res, pathname, query) {
   // GET สถานะ poll ล่าสุด
   if (pathname === '/api/admin/poll-status' && req.method === 'GET') {
     if (!requireAdmin()) return;
-    return json(res, 200, { lastPollAt: data.lastPollAt || {}, sources: API_SOURCES_SERVER });
+    return json(res, 200, { lastPollAt: data.lastPollAt || {}, sources: getApiSourceKeys(data, { onlyEnabled: false }) });
   }
 
   // ===== Announcement banner =====
@@ -1917,19 +1996,96 @@ async function handleApi(req, res, pathname, query) {
     return json(res, 200, { ok: true, packages: data.vipPackages });
   }
 
+  // ===== Admin: API Sources registry =====
+  // GET คืน list ทั้งหมด (รวม disabled) + flag tokenAvailable (ไม่คืน token จริง)
+  if (pathname === '/api/admin/api-sources' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    const list = getApiSources(data).map(s => ({
+      key: s.key,
+      label: s.label || s.key,
+      badgeClass: s.badgeClass || 'bg-zinc-700',
+      enabled: s.enabled !== false,
+      host: s.host || '',
+      basePath: s.basePath || '',
+      tokenEnv: s.tokenEnv || '',
+      adapter: s.adapter || s.key,
+      tokenAvailable: !!resolveSourceToken(s),
+    }));
+    return json(res, 200, { sources: list });
+  }
+  // POST = upsert (create หรือ update by key)
+  if (pathname === '/api/admin/api-sources' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const key = String(body.key || '').trim().toLowerCase();
+    if (!/^[a-z0-9_-]{2,30}$/.test(key)) return badRequest(res, 'key: a-z 0-9 _ - ยาว 2-30');
+    const label = String(body.label || key).slice(0, 50);
+    const badgeClass = String(body.badgeClass || 'bg-zinc-700').slice(0, 50);
+    const host = String(body.host || '').trim().slice(0, 200);
+    if (!host) return badRequest(res, 'ต้องมี host');
+    if (!/^[a-z0-9.\-]+$/i.test(host)) return badRequest(res, 'host มีอักขระไม่ถูกต้อง');
+    const basePath = String(body.basePath || '').trim().slice(0, 200);
+    if (basePath && !basePath.startsWith('/')) return badRequest(res, 'basePath ต้องขึ้นต้นด้วย /');
+    const tokenEnv = String(body.tokenEnv || '').trim().slice(0, 100);
+    if (!/^[A-Z0-9_]*$/.test(tokenEnv)) return badRequest(res, 'tokenEnv: A-Z 0-9 _ เท่านั้น');
+    const adapter = String(body.adapter || 'dramabox').trim().slice(0, 50);
+    const enabled = body.enabled !== false;
+
+    data.apiSources = getApiSources(data);
+    const idx = data.apiSources.findIndex(s => s.key === key);
+    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter };
+    if (idx >= 0) data.apiSources[idx] = entry; else data.apiSources.push(entry);
+    await writeData(data);
+    return json(res, 200, { ok: true, source: entry, tokenAvailable: !!resolveSourceToken(entry) });
+  }
+  // DELETE by key
+  const mApiSrcDel = pathname.match(/^\/api\/admin\/api-sources\/([^/]+)$/);
+  if (mApiSrcDel && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const key = decodeURIComponent(mApiSrcDel[1]);
+    data.apiSources = getApiSources(data);
+    const before = data.apiSources.length;
+    data.apiSources = data.apiSources.filter(s => s.key !== key);
+    if (data.apiSources.length === before) return notFound(res);
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+  // POST test = ลอง fetch /list?page=1&page_size=1 เพื่อทดสอบ host/token/basePath
+  const mApiSrcTest = pathname.match(/^\/api\/admin\/api-sources\/([^/]+)\/test$/);
+  if (mApiSrcTest && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const key = decodeURIComponent(mApiSrcTest[1]);
+    const src = findApiSource(data, key);
+    if (!src) return notFound(res, 'ไม่พบ source');
+    if (!resolveSourceToken(src)) {
+      return json(res, 200, { ok: false, error: 'token_missing', message: `env "${src.tokenEnv}" ว่าง — ตั้งใน Render dashboard` });
+    }
+    try {
+      const t0 = Date.now();
+      const payload = await httpsGetSource(src, '/list?page=1&page_size=1');
+      const items = Array.isArray(payload) ? payload : (payload?.items || []);
+      return json(res, 200, { ok: true, durationMs: Date.now() - t0, items: items.length, sample: items[0] || null });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: 'fetch_failed', message: e.message });
+    }
+  }
+
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);
 }
 
 // ---------- Active polling: หนังใหม่จาก /list ของแต่ละค่าย (เที่ยงคืน ICT) ----------
 // แต่ละ source poll แยก fail-isolated — ถ้า source หนึ่ง fetch ไม่ได้ NEW badge ของ source อื่นยังคงอยู่
-function httpsGetSeriesjeen(targetPath) {
+function httpsGetSource(src, subPath) {
   return new Promise((resolve, reject) => {
+    const token = resolveSourceToken(src);
+    if (!token) return reject(new Error(`token ของ source "${src.key}" ไม่มี (env: ${src.tokenEnv})`));
+    const finalPath = (src.basePath || '') + (subPath.startsWith('/') ? subPath : '/' + subPath);
     const req = https.request({
-      hostname: SERIESJEEN_HOST,
-      path: targetPath,
+      hostname: src.host || SERIESJEEN_HOST,
+      path: finalPath,
       method: 'GET',
       headers: {
-        'Authorization': 'Bearer ' + SERIESJEEN_TOKEN,
+        'Authorization': 'Bearer ' + token,
         'Accept': 'application/json',
         'User-Agent': 'mkw-dooseries-poller/1.0',
       },
@@ -1947,9 +2103,8 @@ function httpsGetSeriesjeen(targetPath) {
   });
 }
 
-async function pollSourceForNewBooks(source, data) {
-  if (!SERIESJEEN_TOKEN) throw new Error('SERIESJEEN_TOKEN not set');
-  const payload = await httpsGetSeriesjeen(`/api/platform/${source}/list?page=1&page_size=50`);
+async function pollSourceForNewBooks(src, data) {
+  const payload = await httpsGetSource(src, `/list?page=1&page_size=50`);
   const raw = Array.isArray(payload) ? payload : (payload?.items || []);
   const items = raw.map(x => ({
     bookId: String(x.series_id || x.bookId || x.id || ''),
@@ -1957,6 +2112,7 @@ async function pollSourceForNewBooks(source, data) {
     cover: String(x.cover || x.coverWap || '').slice(0, 500),
   })).filter(x => x.bookId);
 
+  const source = src.key;
   data.seenBooks = data.seenBooks || {};
   data.seenBooks[source] = data.seenBooks[source] || {};
   const bucket = data.seenBooks[source];
@@ -1980,14 +2136,15 @@ async function pollSourceForNewBooks(source, data) {
 }
 
 async function pollAllSourcesForNewBooks() {
-  if (!SERIESJEEN_TOKEN) {
-    console.warn('[poll] skip — SERIESJEEN_TOKEN not set');
+  const data = await readData();
+  const sources = getApiSources(data).filter(s => s.enabled !== false);
+  if (!sources.length) {
+    console.warn('[poll] skip — ไม่มี API source ที่ enabled');
     return [];
   }
-  const data = await readData();
-  const results = await Promise.allSettled(API_SOURCES_SERVER.map(s => pollSourceForNewBooks(s, data)));
+  const results = await Promise.allSettled(sources.map(s => pollSourceForNewBooks(s, data)));
   const summary = results.map((r, i) => {
-    const source = API_SOURCES_SERVER[i];
+    const source = sources[i].key;
     if (r.status === 'fulfilled') return r.value;
     console.warn(`[poll] ${source} failed:`, r.reason?.message || r.reason);
     return { source, error: r.reason?.message || String(r.reason) };
@@ -2033,7 +2190,7 @@ const server = http.createServer(async (req, res) => {
 
     // Proxy to seriesjeen
     if (pathname.startsWith('/proxy/')) {
-      return proxyToSeriesjeen(req.url, res);
+      return proxyToSource(req.url, res);
     }
 
     // Our API
@@ -2059,7 +2216,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`MKW Movies: http://localhost:${PORT}/`);
-  console.log(`Proxy: /proxy/* → https://${SERIESJEEN_HOST}/*`);
+  console.log(`Proxy: /proxy/<source>/* → API source registry (admin จัดการที่ /admin → 🎬 API Sources)`);
   console.log(`Data: ${DATA_FILE}`);
   scheduleMidnightPoll();
 });
