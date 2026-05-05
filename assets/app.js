@@ -903,7 +903,7 @@ const publicConfig = {
   async load() {
     if (this.data) return this.data;
     try {
-      const r = await fetch('/api/public-config');
+      const r = await fetch('/api/public-config', { cache: 'no-store' });
       if (r.ok) this.data = await r.json();
     } catch {}
     if (!this.data) this.data = { freeMode: { enabled: false, message: '' }, announcement: { enabled: false }, maintenance: { enabled: false }, hiddenBooks: [] };
