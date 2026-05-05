@@ -44,13 +44,112 @@ function resolveSourceToken(src) {
   return env ? (process.env[env] || '') : '';
 }
 function publicApiSource(s) {
+  const eps = s.endpoints && typeof s.endpoints === 'object' ? s.endpoints : endpointsFor(s.adapter || s.key);
   return {
     key: s.key,
     label: s.label || s.key,
     badgeClass: s.badgeClass || 'bg-zinc-700',
     adapter: s.adapter || s.key,
     enabled: s.enabled !== false,
+    endpoints: { ...eps },
+    localeParam: s.localeParam || '',
+    locales: {
+      mode: (s.locales && s.locales.mode === 'selected') ? 'selected' : 'all',
+      allowed: Array.isArray(s.locales?.allowed) ? s.locales.allowed.slice() : [],
+    },
   };
+}
+
+// ---------- Endpoint templates per adapter (placeholder: {page},{page_size},{keyword},{series_id},{genre_id},{ep},{locale}) ----------
+const DEFAULT_ENDPOINTS = {
+  dramabox: {
+    list:        '/list?page={page}&page_size={page_size}',
+    search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:      '/detail?bookId={series_id}',
+    alleps:      '/allepisode?bookId={series_id}',
+    genres:      '/genres',
+    genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+    locales:     '/locales',
+    video:       '',
+  },
+  melolo: {
+    list:        '/list?page={page}&page_size={page_size}',
+    search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:      '/detail/{series_id}',
+    alleps:      '',
+    genres:      '/genres',
+    genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+    locales:     '/locales',
+    video:       '/video?id={series_id}&ep={ep}',
+  },
+  shortmax: {
+    list:        '/list?page={page}&page_size={page_size}',
+    search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:      '/detail/{series_id}',
+    alleps:      '/alleps/{series_id}',
+    genres:      '/genres',
+    genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+    locales:     '/locales',
+    video:       '',
+  },
+  dramawave: {
+    list:        '/list?page={page}&page_size={page_size}',
+    search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:      '/drama/{series_id}',
+    alleps:      '',
+    genres:      '/genres',
+    genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+    locales:     '/locales',
+    video:       '',
+  },
+  netshort: {
+    list:        '/list?page={page}&page_size={page_size}',
+    search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:      '/drama/{series_id}',
+    alleps:      '',
+    genres:      '/genres',
+    genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+    locales:     '/locales',
+    video:       '/watch/{series_id}/{ep}',
+  },
+};
+const ENDPOINT_KEYS = ['list','search','detail','alleps','genres','genre','genreSearch','locales','video'];
+function endpointsFor(adapter) {
+  const base = DEFAULT_ENDPOINTS[adapter] || DEFAULT_ENDPOINTS.dramabox;
+  return { ...base };
+}
+function substituteVars(template, vars) {
+  return String(template || '').replace(/\{(\w+)\}/g, (_, k) => {
+    const v = vars && vars[k];
+    return v == null || v === '' ? '' : encodeURIComponent(String(v));
+  });
+}
+function sanitizeEndpoints(input, adapter) {
+  const out = endpointsFor(adapter);
+  if (input && typeof input === 'object') {
+    for (const k of ENDPOINT_KEYS) {
+      if (typeof input[k] === 'string') out[k] = input[k].slice(0, 500);
+    }
+  }
+  return out;
+}
+function sanitizeLocales(input) {
+  const mode = (input && input.mode === 'selected') ? 'selected' : 'all';
+  const allowed = Array.isArray(input?.allowed)
+    ? input.allowed.filter(x => typeof x === 'string' && x.length && x.length <= 40).slice(0, 100)
+    : [];
+  const discovered = Array.isArray(input?.discovered)
+    ? input.discovered
+        .filter(x => x && typeof x === 'object' && typeof x.id === 'string')
+        .map(x => ({ id: String(x.id).slice(0, 40), name: String(x.name || x.id).slice(0, 100) }))
+        .slice(0, 200)
+    : [];
+  return { mode, allowed, discovered };
 }
 
 const MIME = {
@@ -114,15 +213,20 @@ const DEFAULT_DATA = {
   lastPollAt: {},                                             // source → ISO timestamp ของ midnight poll ครั้งล่าสุด
   apiSources: [
     { key: 'dramabox',  label: 'DramaBox',  badgeClass: 'bg-red-600',     enabled: true,
-      host: 'api.seriesjeen.online', basePath: '/api/platform/dramabox',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox' },
+      host: 'api.seriesjeen.online', basePath: '/api/platform/dramabox',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox',
+      endpoints: endpointsFor('dramabox'),  localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
     { key: 'melolo',    label: 'Melolo',    badgeClass: 'bg-yellow-500',  enabled: true,
-      host: 'api.seriesjeen.online', basePath: '/api/platform/melolo',    tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'melolo' },
+      host: 'api.seriesjeen.online', basePath: '/api/platform/melolo',    tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'melolo',
+      endpoints: endpointsFor('melolo'),    localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
     { key: 'shortmax',  label: 'ShortMax',  badgeClass: 'bg-blue-600',    enabled: true,
-      host: 'api.seriesjeen.online', basePath: '/api/platform/shortmax',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'shortmax' },
+      host: 'api.seriesjeen.online', basePath: '/api/platform/shortmax',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'shortmax',
+      endpoints: endpointsFor('shortmax'),  localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
     { key: 'dramawave', label: 'DramaWave', badgeClass: 'bg-purple-600',  enabled: true,
-      host: 'api.seriesjeen.online', basePath: '/api/platform/dramawave', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramawave' },
+      host: 'api.seriesjeen.online', basePath: '/api/platform/dramawave', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramawave',
+      endpoints: endpointsFor('dramawave'), localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
     { key: 'netshort',  label: 'Netshort',  badgeClass: 'bg-emerald-600', enabled: true,
-      host: 'api.seriesjeen.online', basePath: '/api/platform/netshort',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'netshort' },
+      host: 'api.seriesjeen.online', basePath: '/api/platform/netshort',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'netshort',
+      endpoints: endpointsFor('netshort'),  localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
   ],
 };
 
@@ -150,6 +254,23 @@ function applyDefaults(data) {
     if (data.roleLimits.userEps == null && data.freeMode.userEps != null) data.roleLimits.userEps = data.freeMode.userEps;
     delete data.freeMode.guestEps;
     delete data.freeMode.userEps;
+  }
+  // apiSources migration: เพิ่ม endpoints/localeParam/locales ให้ source เก่าที่ยังไม่มี
+  if (Array.isArray(data.apiSources)) {
+    for (const s of data.apiSources) {
+      if (!s.endpoints || typeof s.endpoints !== 'object') s.endpoints = endpointsFor(s.adapter || s.key);
+      else {
+        const base = endpointsFor(s.adapter || s.key);
+        for (const k of ENDPOINT_KEYS) if (typeof s.endpoints[k] !== 'string') s.endpoints[k] = base[k] || '';
+      }
+      if (typeof s.localeParam !== 'string') s.localeParam = '';
+      if (!s.locales || typeof s.locales !== 'object') s.locales = { mode: 'all', allowed: [], discovered: [] };
+      else {
+        if (s.locales.mode !== 'selected') s.locales.mode = 'all';
+        if (!Array.isArray(s.locales.allowed)) s.locales.allowed = [];
+        if (!Array.isArray(s.locales.discovered)) s.locales.discovered = [];
+      }
+    }
   }
   return data;
 }
@@ -2009,6 +2130,13 @@ async function handleApi(req, res, pathname, query) {
       basePath: s.basePath || '',
       tokenEnv: s.tokenEnv || '',
       adapter: s.adapter || s.key,
+      endpoints: s.endpoints && typeof s.endpoints === 'object' ? { ...s.endpoints } : endpointsFor(s.adapter || s.key),
+      localeParam: s.localeParam || '',
+      locales: {
+        mode: s.locales?.mode === 'selected' ? 'selected' : 'all',
+        allowed: Array.isArray(s.locales?.allowed) ? s.locales.allowed.slice() : [],
+        discovered: Array.isArray(s.locales?.discovered) ? s.locales.discovered.slice() : [],
+      },
       tokenAvailable: !!resolveSourceToken(s),
     }));
     return json(res, 200, { sources: list });
@@ -2030,10 +2158,19 @@ async function handleApi(req, res, pathname, query) {
     if (!/^[A-Z0-9_]*$/.test(tokenEnv)) return badRequest(res, 'tokenEnv: A-Z 0-9 _ เท่านั้น');
     const adapter = String(body.adapter || 'dramabox').trim().slice(0, 50);
     const enabled = body.enabled !== false;
+    const endpoints = sanitizeEndpoints(body.endpoints, adapter);
+    const localeParam = String(body.localeParam || '').trim().slice(0, 40);
+    if (localeParam && !/^[a-zA-Z0-9_]+$/.test(localeParam)) return badRequest(res, 'localeParam: a-z 0-9 _ เท่านั้น');
+    const locales = sanitizeLocales(body.locales);
 
     data.apiSources = getApiSources(data);
     const idx = data.apiSources.findIndex(s => s.key === key);
-    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter };
+    const existing = idx >= 0 ? data.apiSources[idx] : null;
+    // preserve discovered list ถ้า body ไม่ส่ง (หรือ admin แค่ save form โดยไม่กด probe ใหม่)
+    if (existing?.locales?.discovered && !Array.isArray(body.locales?.discovered)) {
+      locales.discovered = existing.locales.discovered;
+    }
+    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter, endpoints, localeParam, locales };
     if (idx >= 0) data.apiSources[idx] = entry; else data.apiSources.push(entry);
     await writeData(data);
     return json(res, 200, { ok: true, source: entry, tokenAvailable: !!resolveSourceToken(entry) });
@@ -2067,6 +2204,50 @@ async function handleApi(req, res, pathname, query) {
       return json(res, 200, { ok: true, durationMs: Date.now() - t0, items: items.length, sample: items[0] || null });
     } catch (e) {
       return json(res, 200, { ok: false, error: 'fetch_failed', message: e.message });
+    }
+  }
+
+  // POST probe = ยิง endpoint ที่ระบุ (ใช้ template จาก body ถ้าส่งมา, ไม่งั้น fallback saved) + แสดง raw response
+  // body: { endpoint: 'list'|'detail'|..., template?: '/custom/path?x={page}', vars?: { page, page_size, keyword, series_id, genre_id, ep, locale },
+  //         overrides?: { host, basePath, tokenEnv } — ใช้ตอนฟอร์มกดทดสอบก่อน save }
+  const mApiSrcProbe = pathname.match(/^\/api\/admin\/api-sources\/([^/]+)\/probe$/);
+  if (mApiSrcProbe && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const key = decodeURIComponent(mApiSrcProbe[1]);
+    const body = await readBody(req);
+    let src = findApiSource(data, key);
+    if (!src && body.overrides) {
+      // new source (ยังไม่ save) — ใช้ overrides จาก form
+      src = { key, host: body.overrides.host, basePath: body.overrides.basePath || '', tokenEnv: body.overrides.tokenEnv || '', adapter: body.overrides.adapter || 'dramabox' };
+    }
+    if (!src) return notFound(res, 'ไม่พบ source และไม่มี overrides');
+    if (body.overrides && typeof body.overrides === 'object') {
+      src = { ...src,
+        host: body.overrides.host || src.host,
+        basePath: typeof body.overrides.basePath === 'string' ? body.overrides.basePath : src.basePath,
+        tokenEnv: body.overrides.tokenEnv || src.tokenEnv,
+      };
+    }
+    const which = String(body.endpoint || 'list');
+    const tpl = String(body.template != null ? body.template : (src.endpoints?.[which] ?? endpointsFor(src.adapter || src.key)[which] ?? ''));
+    if (!tpl) return json(res, 200, { ok: false, error: 'empty_template', message: `endpoint "${which}" ไม่มี template` });
+    if (!resolveSourceToken(src)) {
+      return json(res, 200, { ok: false, error: 'token_missing', message: `env "${src.tokenEnv}" ว่าง — ตั้งใน Render dashboard ก่อน` });
+    }
+    const defaults = { page: 1, page_size: 5, keyword: '', series_id: '', genre_id: '', ep: 1, locale: '' };
+    const vars = Object.assign({}, defaults, body.vars && typeof body.vars === 'object' ? body.vars : {});
+    let subPath = substituteVars(tpl, vars);
+    // append localeParam ถ้าเรียก list/search/genre + ส่ง locale
+    if (body.localeParam && vars.locale) {
+      const sep = subPath.includes('?') ? '&' : '?';
+      subPath += `${sep}${encodeURIComponent(body.localeParam)}=${encodeURIComponent(vars.locale)}`;
+    }
+    try {
+      const t0 = Date.now();
+      const payload = await httpsGetSource(src, subPath);
+      return json(res, 200, { ok: true, durationMs: Date.now() - t0, path: subPath, payload });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: 'fetch_failed', message: e.message, path: subPath });
     }
   }
 

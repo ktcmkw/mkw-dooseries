@@ -1810,6 +1810,17 @@ async function renderSeenBooksTab(c) {
 
 // ---------- API Sources (registry สำหรับ admin จัดการ API หนังต่างๆ) ----------
 const _ADAPTERS = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
+const _ENDPOINT_FIELDS = [
+  { k: 'list',        label: 'list',        hint: 'รายการทั้งหมด (ใช้ใน home)', vars: '{page} {page_size} {locale}' },
+  { k: 'search',      label: 'search',      hint: 'ค้นหา',                       vars: '{keyword} {page} {page_size} {locale}' },
+  { k: 'detail',      label: 'detail',      hint: 'ข้อมูลซีรีส์',                  vars: '{series_id} {locale}' },
+  { k: 'alleps',      label: 'alleps',      hint: 'list ตอนทั้งหมด (เว้นว่างถ้า extract จาก detail)', vars: '{series_id} {locale}' },
+  { k: 'genres',      label: 'genres',      hint: 'list หมวดหมู่',                 vars: '{locale}' },
+  { k: 'genre',       label: 'genre',       hint: 'list ตาม genre',              vars: '{genre_id} {page} {page_size} {locale}' },
+  { k: 'genreSearch', label: 'genreSearch', hint: 'ค้นหาภายใน genre',            vars: '{genre_id} {keyword} {page} {page_size} {locale}' },
+  { k: 'locales',     label: 'locales',     hint: 'list ภาษาที่มี (ใช้กับ locale picker)', vars: '(ไม่มี)' },
+  { k: 'video',       label: 'video',       hint: 'URL ตอน (lazy fetch ตอนเล่น เว้นว่างถ้า URL อยู่ใน alleps แล้ว)', vars: '{series_id} {ep} {locale}' },
+];
 const _BADGE_OPTIONS = [
   { cls: 'bg-red-600',     label: 'แดง' },
   { cls: 'bg-orange-600',  label: 'ส้ม' },
@@ -1823,6 +1834,63 @@ const _BADGE_OPTIONS = [
   { cls: 'bg-pink-600',    label: 'ชมพู' },
   { cls: 'bg-zinc-700',    label: 'เทา' },
 ];
+// Preset templates (sync กับ DEFAULT_ENDPOINTS ใน serve.js — auto-fill ตอน admin เลือก adapter)
+const _ENDPOINT_PRESETS = {
+  dramabox: {
+    list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:'/detail?bookId={series_id}', alleps:'/allepisode?bookId={series_id}',
+    genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  melolo: {
+    list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:'/detail/{series_id}', alleps:'',
+    genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'/video?id={series_id}&ep={ep}' },
+  shortmax: {
+    list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:'/detail/{series_id}', alleps:'/alleps/{series_id}',
+    genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  dramawave: {
+    list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:'/drama/{series_id}', alleps:'',
+    genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  netshort: {
+    list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}',
+    detail:'/drama/{series_id}', alleps:'',
+    genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}',
+    genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'/watch/{series_id}/{ep}' },
+};
+
+// walk response → หา array ที่น่าเป็น locale list → [{id, name}]
+function _parseLocales(payload) {
+  const tryArr = (arr) => {
+    if (!Array.isArray(arr)) return null;
+    const items = arr.map(x => {
+      if (typeof x === 'string') return { id: x, name: x };
+      if (!x || typeof x !== 'object') return null;
+      const id = x.id || x.code || x.locale || x.language || x.lang || x.key || x.value || '';
+      const name = x.name || x.label || x.display || x.title || id;
+      return id ? { id: String(id), name: String(name || id) } : null;
+    }).filter(Boolean);
+    return items.length ? items : null;
+  };
+  if (!payload) return [];
+  const direct = tryArr(payload);
+  if (direct) return direct;
+  if (payload && typeof payload === 'object') {
+    for (const k of ['data','items','list','result','locales','languages']) {
+      const v = payload[k];
+      const r = tryArr(v);
+      if (r) return r;
+      if (v && typeof v === 'object') {
+        for (const kk of Object.keys(v)) { const rr = tryArr(v[kk]); if (rr) return rr; }
+      }
+    }
+  }
+  return [];
+}
 
 async function renderApiSourcesTab(c) {
   const { sources } = await backendGet('/api/admin/api-sources');
@@ -1928,71 +1996,128 @@ async function renderApiSourcesTab(c) {
 
 function openApiSourceForm(source, c) {
   const isEdit = !!source;
+  const defaultEps = { ..._ENDPOINT_PRESETS.dramabox };
   const cur = source || { key: '', label: '', badgeClass: 'bg-zinc-700', enabled: true,
-    host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox' };
+    host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox',
+    endpoints: defaultEps, localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } };
+  const curEps = cur.endpoints && typeof cur.endpoints === 'object' ? cur.endpoints : { ..._ENDPOINT_PRESETS[cur.adapter] || defaultEps };
+  const curLocales = cur.locales || { mode: 'all', allowed: [], discovered: [] };
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center p-4';
   overlay.style.background = 'rgba(0,0,0,0.75)';
   overlay.innerHTML = `
-    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
-      <div class="flex items-center justify-between p-4 border-b border-zinc-800">
+    <div class="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-3xl w-full max-h-[92vh] overflow-y-auto shadow-2xl">
+      <div class="flex items-center justify-between p-4 border-b border-zinc-800 sticky top-0 bg-zinc-900 z-10">
         <h4 class="font-black text-lg">${isEdit ? '✏ แก้ไข' : '+ เพิ่ม'} API Source</h4>
         <button class="closeBtn w-8 h-8 flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 rounded-full text-zinc-300">✕</button>
       </div>
-      <form id="apiSrcForm" class="p-4 space-y-3 text-sm">
-        <div>
-          <label class="text-xs text-zinc-400">Key (ใช้ใน URL: /proxy/&lt;key&gt;/...)</label>
-          <input name="key" type="text" value="${escapeHtml(cur.key)}" ${isEdit ? 'readonly' : ''} required pattern="[a-z0-9_-]{2,30}"
-            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono ${isEdit ? 'opacity-60' : ''}"/>
-          <p class="text-[10px] text-zinc-500 mt-0.5">a-z 0-9 _ - เท่านั้น (2-30 ตัว) — แก้ไม่ได้หลังสร้าง</p>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
+      <form id="apiSrcForm" class="p-4 space-y-4 text-sm">
+        <!-- ===== 1. Identity ===== -->
+        <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-3">
+          <legend class="px-2 text-xs text-zinc-400 font-bold">① ข้อมูลทั่วไป</legend>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-zinc-400">Key (/proxy/&lt;key&gt;/...)</label>
+              <input name="key" type="text" value="${escapeHtml(cur.key)}" ${isEdit ? 'readonly' : ''} required pattern="[a-z0-9_-]{2,30}"
+                class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono ${isEdit ? 'opacity-60' : ''}"/>
+              <p class="text-[10px] text-zinc-500 mt-0.5">a-z 0-9 _ - (2-30) แก้ไม่ได้หลังสร้าง</p>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">Label</label>
+              <input name="label" type="text" value="${escapeHtml(cur.label)}" required maxlength="50"
+                class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">สี Badge</label>
+              <select name="badgeClass" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
+                ${_BADGE_OPTIONS.map(o => `<option value="${o.cls}" ${o.cls === cur.badgeClass ? 'selected' : ''}>${o.label}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">Adapter (response shape)</label>
+              <select name="adapter" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
+                ${_ADAPTERS.map(a => `<option value="${a}" ${a === cur.adapter ? 'selected' : ''}>${a}</option>`).join('')}
+              </select>
+              <p class="text-[10px] text-zinc-500 mt-0.5">กำหนด response normalization + auto-fill endpoints preset</p>
+            </div>
+          </div>
+          <label class="flex items-center gap-2 px-3 py-2 bg-zinc-950/50 rounded">
+            <input name="enabled" type="checkbox" ${cur.enabled ? 'checked' : ''} class="w-4 h-4 accent-emerald-500"/>
+            <span>เปิดใช้งาน (uncheck = ซ่อนจากเว็บ)</span>
+          </label>
+        </fieldset>
+
+        <!-- ===== 2. Server / Token ===== -->
+        <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-3">
+          <legend class="px-2 text-xs text-zinc-400 font-bold">② Host / Base / Token</legend>
           <div>
-            <label class="text-xs text-zinc-400">Label (ชื่อแสดง)</label>
-            <input name="label" type="text" value="${escapeHtml(cur.label)}" required maxlength="50"
-              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded"/>
+            <label class="text-xs text-zinc-400">Host</label>
+            <input name="host" type="text" value="${escapeHtml(cur.host)}" required maxlength="200"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
           </div>
           <div>
-            <label class="text-xs text-zinc-400">สี Badge</label>
-            <select name="badgeClass" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
-              ${_BADGE_OPTIONS.map(o => `<option value="${o.cls}" ${o.cls === cur.badgeClass ? 'selected' : ''}>${o.label}</option>`).join('')}
-            </select>
+            <label class="text-xs text-zinc-400">Base Path (prefix prepend ก่อน endpoint)</label>
+            <input name="basePath" type="text" value="${escapeHtml(cur.basePath)}" maxlength="200"
+              placeholder="/api/platform/&lt;key&gt;"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+            <p class="text-[10px] text-zinc-500 mt-0.5">Final URL = https://&lt;host&gt;&lt;basePath&gt;&lt;endpoint&gt;</p>
           </div>
-        </div>
-        <div>
-          <label class="text-xs text-zinc-400">Host (เช่น api.seriesjeen.online)</label>
-          <input name="host" type="text" value="${escapeHtml(cur.host)}" required maxlength="200"
-            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
-        </div>
-        <div>
-          <label class="text-xs text-zinc-400">Base Path (prefix ที่ server prepend ก่อน forward)</label>
-          <input name="basePath" type="text" value="${escapeHtml(cur.basePath)}" maxlength="200"
-            placeholder="/api/platform/&lt;key&gt;"
-            class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
-          <p class="text-[10px] text-zinc-500 mt-0.5">Frontend เรียก /list, /search, /detail/{id} ฯลฯ — server จะ prepend basePath ให้</p>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="text-xs text-zinc-400">Token env var</label>
+            <label class="text-xs text-zinc-400">Token env var (ต้องตั้งใน Render)</label>
             <input name="tokenEnv" type="text" value="${escapeHtml(cur.tokenEnv)}" maxlength="100" pattern="[A-Z0-9_]*"
               placeholder="SERIESJEEN_TOKEN"
               class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
-            <p class="text-[10px] text-zinc-500 mt-0.5">ตั้งใน Render → Environment</p>
           </div>
+        </fieldset>
+
+        <!-- ===== 3. Endpoint templates ===== -->
+        <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-2">
+          <legend class="px-2 text-xs text-zinc-400 font-bold">③ Endpoint templates (placeholder ในวงเล็บ {} จะถูกแทนตอนเรียก)</legend>
+          <div class="flex items-center gap-2 mb-1">
+            <button type="button" id="apSrcResetEps" class="text-[11px] px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded">↺ รีเซ็ตตาม adapter ที่เลือก</button>
+            <span class="text-[10px] text-zinc-500">ใช้ได้: {page} {page_size} {keyword} {series_id} {genre_id} {ep} {locale}</span>
+          </div>
+          <div class="space-y-2">
+            ${_ENDPOINT_FIELDS.map(f => `
+              <div class="grid grid-cols-[90px_1fr_auto] gap-2 items-start">
+                <div class="pt-1.5">
+                  <div class="text-xs font-mono text-emerald-300">${f.label}</div>
+                  <div class="text-[10px] text-zinc-500 leading-tight">${escapeHtml(f.vars)}</div>
+                </div>
+                <div>
+                  <input name="ep_${f.k}" type="text" value="${escapeHtml(curEps[f.k] || '')}" maxlength="500"
+                    placeholder="${escapeHtml(f.hint)}"
+                    class="ep-input w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+                </div>
+                <button type="button" data-probe="${f.k}" class="px-2 py-1 text-[11px] bg-indigo-600 hover:bg-indigo-500 text-white rounded shrink-0" title="ทดสอบ endpoint นี้">🔍 Test</button>
+              </div>
+            `).join('')}
+          </div>
+        </fieldset>
+
+        <!-- ===== 4. Locale filter ===== -->
+        <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-3">
+          <legend class="px-2 text-xs text-zinc-400 font-bold">④ กรองตาม Locale / ภาษา</legend>
           <div>
-            <label class="text-xs text-zinc-400">Adapter (response shape)</label>
-            <select name="adapter" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
-              ${_ADAPTERS.map(a => `<option value="${a}" ${a === cur.adapter ? 'selected' : ''}>${a}</option>`).join('')}
-            </select>
-            <p class="text-[10px] text-zinc-500 mt-0.5">ถ้า response ไม่ตรง shape ทั้ง 5 = ต้องเพิ่ม adapter ในโค้ด</p>
+            <label class="text-xs text-zinc-400">Locale query param (ถ้า API รองรับ)</label>
+            <input name="localeParam" type="text" value="${escapeHtml(cur.localeParam || '')}" maxlength="40" pattern="[a-zA-Z0-9_]*"
+              placeholder="locale"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+            <p class="text-[10px] text-zinc-500 mt-0.5">ระบบจะ append ?&lt;locale_param&gt;=&lt;id&gt; ตอน fetch. เว้นว่าง = API ไม่รองรับ locale filter</p>
           </div>
-        </div>
-        <label class="flex items-center gap-2 px-3 py-2 bg-zinc-950/50 rounded">
-          <input name="enabled" type="checkbox" ${cur.enabled ? 'checked' : ''} class="w-4 h-4 accent-emerald-500"/>
-          <span>เปิดใช้งาน (uncheck = ซ่อนจากเว็บ)</span>
-        </label>
+          <div class="flex items-center gap-2 flex-wrap">
+            <label class="flex items-center gap-1.5 text-xs"><input type="radio" name="localeMode" value="all" ${curLocales.mode !== 'selected' ? 'checked' : ''}/> ทั้งหมด (ไม่กรอง)</label>
+            <label class="flex items-center gap-1.5 text-xs"><input type="radio" name="localeMode" value="selected" ${curLocales.mode === 'selected' ? 'checked' : ''}/> เลือกบางภาษา</label>
+            <button type="button" id="apSrcProbeLocales" class="ml-auto px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white font-bold rounded">🔍 ทดสอบ /locales</button>
+          </div>
+          <div id="apSrcLocaleList" class="mt-2 p-2 bg-zinc-950/50 border border-zinc-800 rounded min-h-[60px]">
+            ${_renderLocaleCheckboxes(curLocales.discovered || [], curLocales.allowed || [])}
+          </div>
+        </fieldset>
+
         <div id="apiSrcFormMsg" class="text-xs"></div>
-        <div class="flex gap-2 justify-end pt-2">
+        <div id="apiSrcProbeOut" class="text-xs hidden bg-zinc-950 border border-zinc-800 rounded p-2 max-h-60 overflow-auto"></div>
+        <div class="flex gap-2 justify-end pt-2 sticky bottom-0 bg-zinc-900 pb-1">
           <button type="button" class="closeBtn px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded">ยกเลิก</button>
           <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded">${isEdit ? 'บันทึก' : 'เพิ่ม'}</button>
         </div>
@@ -2002,20 +2127,116 @@ function openApiSourceForm(source, c) {
   const close = () => overlay.remove();
   overlay.onclick = e => { if (e.target === overlay) close(); };
   overlay.querySelectorAll('.closeBtn').forEach(b => b.onclick = close);
-  overlay.querySelector('#apiSrcForm').onsubmit = async e => {
-    e.preventDefault();
-    const f = e.target;
-    const body = {
-      key: f.key.value.trim().toLowerCase(),
-      label: f.label.value.trim(),
-      badgeClass: f.badgeClass.value,
-      host: f.host.value.trim(),
-      basePath: f.basePath.value.trim(),
-      tokenEnv: f.tokenEnv.value.trim().toUpperCase(),
-      adapter: f.adapter.value,
-      enabled: f.enabled.checked,
+
+  const form = overlay.querySelector('#apiSrcForm');
+  const msgEl = overlay.querySelector('#apiSrcFormMsg');
+  const probeOutEl = overlay.querySelector('#apiSrcProbeOut');
+  const showProbeOut = (title, obj) => {
+    probeOutEl.classList.remove('hidden');
+    probeOutEl.innerHTML = `<div class="text-zinc-400 mb-1">${escapeHtml(title)}</div><pre class="text-[10px] text-zinc-300 whitespace-pre-wrap break-all">${escapeHtml(JSON.stringify(obj, null, 2)).slice(0, 10000)}</pre>`;
+  };
+
+  // Adapter change → reset preset (confirm ก่อน ถ้ามีการแก้ endpoints ไปแล้ว)
+  form.adapter.onchange = () => {
+    const adapter = form.adapter.value;
+    const preset = _ENDPOINT_PRESETS[adapter];
+    if (!preset) return;
+    const hasCustom = _ENDPOINT_FIELDS.some(f => {
+      const cur = form.elements[`ep_${f.k}`].value.trim();
+      const presetVal = preset[f.k] || '';
+      return cur && cur !== presetVal;
+    });
+    if (hasCustom && !confirm(`เปลี่ยน adapter เป็น "${adapter}" — เขียนทับ endpoints ปัจจุบันด้วย preset?`)) return;
+    _ENDPOINT_FIELDS.forEach(f => { form.elements[`ep_${f.k}`].value = preset[f.k] || ''; });
+  };
+
+  // Reset endpoints button
+  overlay.querySelector('#apSrcResetEps').onclick = () => {
+    const adapter = form.adapter.value;
+    const preset = _ENDPOINT_PRESETS[adapter] || _ENDPOINT_PRESETS.dramabox;
+    _ENDPOINT_FIELDS.forEach(f => { form.elements[`ep_${f.k}`].value = preset[f.k] || ''; });
+  };
+
+  // Collect current form state → body สำหรับ probe (ใช้ live ก่อน save)
+  const collectBody = () => {
+    const eps = {};
+    _ENDPOINT_FIELDS.forEach(f => { eps[f.k] = form.elements[`ep_${f.k}`].value.trim(); });
+    const allowed = Array.from(overlay.querySelectorAll('#apSrcLocaleList input[data-loc]:checked')).map(el => el.dataset.loc);
+    return {
+      key: form.key.value.trim().toLowerCase(),
+      label: form.label.value.trim(),
+      badgeClass: form.badgeClass.value,
+      host: form.host.value.trim(),
+      basePath: form.basePath.value.trim(),
+      tokenEnv: form.tokenEnv.value.trim().toUpperCase(),
+      adapter: form.adapter.value,
+      enabled: form.enabled.checked,
+      endpoints: eps,
+      localeParam: form.localeParam.value.trim(),
+      locales: { mode: form.localeMode.value, allowed, discovered: curLocales.discovered || [] },
     };
-    const msgEl = overlay.querySelector('#apiSrcFormMsg');
+  };
+
+  // Probe individual endpoint button
+  overlay.querySelectorAll('[data-probe]').forEach(btn => btn.onclick = async () => {
+    const k = btn.dataset.probe;
+    const body = collectBody();
+    const tpl = body.endpoints[k];
+    if (!tpl) { showProbeOut(`endpoint "${k}" ยังว่าง`, { hint: 'ใส่ template ก่อน เช่น /list?page={page}' }); return; }
+    const vars = k === 'detail' || k === 'alleps' || k === 'video'
+      ? { series_id: prompt(`ทดสอบ "${k}" — ใส่ series_id ตัวอย่าง:`, '') || '', ep: 1 }
+      : (k === 'genre' || k === 'genreSearch')
+        ? { genre_id: prompt(`ทดสอบ "${k}" — ใส่ genre_id ตัวอย่าง:`, '') || '', keyword: '', page: 1, page_size: 5 }
+        : (k === 'search' ? { keyword: prompt('ทดสอบ search — keyword:', 'drama') || '', page: 1, page_size: 5 } : { page: 1, page_size: 5 });
+    btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = '⏳';
+    try {
+      const r = await backendPost(`/api/admin/api-sources/${encodeURIComponent(body.key || cur.key || 'new')}/probe`, {
+        endpoint: k, template: tpl, vars,
+        overrides: { host: body.host, basePath: body.basePath, tokenEnv: body.tokenEnv, adapter: body.adapter },
+      });
+      if (r.ok) showProbeOut(`✓ ${k} (${r.durationMs}ms) — GET ${r.path}`, r.payload);
+      else showProbeOut(`✕ ${k} ${r.error || ''}: ${r.message || ''}`, { path: r.path });
+    } catch (e) { showProbeOut(`✕ ${k} ${e.message}`, {}); }
+    finally { btn.disabled = false; btn.innerHTML = orig; }
+  });
+
+  // Probe /locales → parse → render checkbox list
+  overlay.querySelector('#apSrcProbeLocales').onclick = async () => {
+    const body = collectBody();
+    if (!body.endpoints.locales) { showProbeOut('endpoint "locales" ยังว่าง', { hint: 'ใส่ template เช่น /locales' }); return; }
+    const btn = overlay.querySelector('#apSrcProbeLocales');
+    btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = '⏳ กำลังเรียก...';
+    try {
+      const r = await backendPost(`/api/admin/api-sources/${encodeURIComponent(body.key || cur.key || 'new')}/probe`, {
+        endpoint: 'locales', template: body.endpoints.locales,
+        overrides: { host: body.host, basePath: body.basePath, tokenEnv: body.tokenEnv, adapter: body.adapter },
+      });
+      if (!r.ok) { showProbeOut(`✕ ${r.error || ''}: ${r.message || ''}`, { path: r.path }); return; }
+      const discovered = _parseLocales(r.payload);
+      curLocales.discovered = discovered;
+      const listEl = overlay.querySelector('#apSrcLocaleList');
+      if (!discovered.length) {
+        listEl.innerHTML = `<div class="text-zinc-500 text-xs">Parser หา locale ไม่เจอ — ดู raw response ด้านล่าง แล้วใส่ locale ID ด้วยมือ</div>
+          <input type="text" id="apSrcLocaleManual" placeholder="เช่น en,th,id (คั่นด้วย ,)" class="w-full mt-1 px-2 py-1 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>`;
+        showProbeOut(`raw /locales (${r.durationMs}ms)`, r.payload);
+      } else {
+        listEl.innerHTML = _renderLocaleCheckboxes(discovered, body.locales.allowed);
+        showProbeOut(`✓ /locales (${r.durationMs}ms) — เจอ ${discovered.length} ภาษา`, r.payload);
+      }
+    } catch (e) { showProbeOut(`✕ ${e.message}`, {}); }
+    finally { btn.disabled = false; btn.innerHTML = orig; }
+  };
+
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const body = collectBody();
+    // ถ้า manual locale input ใช้ → merge
+    const manual = overlay.querySelector('#apSrcLocaleManual');
+    if (manual && manual.value.trim()) {
+      const ids = manual.value.split(',').map(x => x.trim()).filter(Boolean);
+      body.locales.allowed = ids;
+      body.locales.discovered = ids.map(id => ({ id, name: id }));
+    }
     try {
       const r = await backendPost('/api/admin/api-sources', body);
       msgEl.innerHTML = `<span class="text-emerald-400">✓ บันทึกสำเร็จ${r.tokenAvailable ? '' : ' — แต่ env ' + escapeHtml(body.tokenEnv) + ' ยังว่าง'}</span>`;
@@ -2024,4 +2245,23 @@ function openApiSourceForm(source, c) {
       msgEl.innerHTML = `<span class="text-red-400">✕ ${escapeHtml(ex.message)}</span>`;
     }
   };
+}
+
+function _renderLocaleCheckboxes(discovered, allowed) {
+  if (!discovered.length) return `<div class="text-zinc-500 text-xs">กดปุ่ม "🔍 ทดสอบ /locales" ด้านบน เพื่อดึง list ภาษาจาก API</div>`;
+  const allowedSet = new Set(allowed || []);
+  return `
+    <div class="flex items-center gap-2 mb-2">
+      <button type="button" onclick="this.closest('#apSrcLocaleList').querySelectorAll('input[data-loc]').forEach(i=>i.checked=true)" class="text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">เลือกทั้งหมด</button>
+      <button type="button" onclick="this.closest('#apSrcLocaleList').querySelectorAll('input[data-loc]').forEach(i=>i.checked=false)" class="text-[11px] px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 rounded">ล้าง</button>
+      <span class="text-[10px] text-zinc-500">พบ ${discovered.length} ภาษา</span>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-1">
+      ${discovered.map(l => `
+        <label class="flex items-center gap-1.5 text-xs px-2 py-1 bg-zinc-800/50 rounded hover:bg-zinc-800 cursor-pointer">
+          <input type="checkbox" data-loc="${escapeHtml(l.id)}" ${allowedSet.has(l.id) ? 'checked' : ''} class="accent-emerald-500"/>
+          <span class="font-mono text-zinc-300">${escapeHtml(l.id)}</span>
+          ${l.name && l.name !== l.id ? `<span class="text-zinc-500 truncate">${escapeHtml(l.name)}</span>` : ''}
+        </label>`).join('')}
+    </div>`;
 }

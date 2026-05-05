@@ -8,6 +8,41 @@
 let API_SOURCES = ['dramabox', 'melolo', 'shortmax', 'dramawave', 'netshort'];
 const SOURCE_LABELS = { dramabox: 'DramaBox', melolo: 'Melolo', shortmax: 'ShortMax', dramawave: 'DramaWave', netshort: 'Netshort' };
 const SOURCE_BADGE_CLS = { dramabox: 'bg-red-600', melolo: 'bg-yellow-500', shortmax: 'bg-blue-600', dramawave: 'bg-purple-600', netshort: 'bg-emerald-600' };
+// SOURCE_REG: key → full source entry (endpoints + localeParam + locales.{mode,allowed}) — populated โดย publicConfig.load()
+const SOURCE_REG = {};
+// Fallback presets (ใช้ตอน publicConfig ยังไม่ load หรือ source ใหม่ไม่มี endpoints)
+const _FALLBACK_ENDPOINTS = {
+  dramabox:  { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/detail?bookId={series_id}', alleps:'/allepisode?bookId={series_id}', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  melolo:    { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/detail/{series_id}', alleps:'', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'/video?id={series_id}&ep={ep}' },
+  shortmax:  { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/detail/{series_id}', alleps:'/alleps/{series_id}', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  dramawave: { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/drama/{series_id}', alleps:'', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'' },
+  netshort:  { list:'/list?page={page}&page_size={page_size}', search:'/search?keyword={keyword}&page={page}&page_size={page_size}', detail:'/drama/{series_id}', alleps:'', genres:'/genres', genre:'/genre/{genre_id}?page={page}&page_size={page_size}', genreSearch:'/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}', locales:'/locales', video:'/watch/{series_id}/{ep}' },
+};
+function _subVars(tpl, vars) {
+  return String(tpl || '').replace(/\{(\w+)\}/g, (_, k) => {
+    const v = vars && vars[k];
+    return v == null || v === '' ? '' : encodeURIComponent(String(v));
+  });
+}
+// pathFor(source, endpoint, vars) → '/list?page=1&page_size=50' (substituted)
+// เลือก template จาก SOURCE_REG[source].endpoints → fallback preset ของ adapter → fallback dramabox
+function pathFor(source, endpoint, vars) {
+  const reg = SOURCE_REG[source];
+  let tpl = reg?.endpoints?.[endpoint];
+  if (!tpl) {
+    const adapter = reg?.adapter || source;
+    tpl = (_FALLBACK_ENDPOINTS[adapter] || _FALLBACK_ENDPOINTS.dramabox)[endpoint] || '';
+  }
+  return _subVars(tpl, vars || {});
+}
+function _appendLocaleParam(path, localeParam, locale) {
+  if (!localeParam || !locale) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}${encodeURIComponent(localeParam)}=${encodeURIComponent(locale)}`;
+}
+function _isListLikePath(path) {
+  return /[?&]page=/.test(path) || /\/(list|search|genres?)(\?|$)/.test(path);
+}
 const PAGE_SIZE = 40;
 const BRAND = 'MKW Movies';
 
@@ -455,15 +490,15 @@ function tagSource(payload, src) {
 //           GET /video?id=X&ep=N      → {videoUrl, qualityList:[{label,url}], locked, ...}  (per-episode URL)
 const SOURCE_ADAPTERS = {
   dramabox: {
-    detailPath: id => `/detail?bookId=${encodeURIComponent(id)}`,
-    episodesPath: id => `/allepisode?bookId=${encodeURIComponent(id)}`,
+    detailPath: id => pathFor('dramabox', 'detail', { series_id: id }),
+    episodesPath: id => pathFor('dramabox', 'alleps', { series_id: id }),
     normalizeDetail: r => r,        // identity
     normalizeEpisodes: r => Array.isArray(r) ? r : [],
     extractEpisodesFromDetail: () => null,  // DramaBox ต้อง fetch /allepisode แยก
     fetchVideoUrl: null,                    // DramaBox ส่ง URL พร้อมใน /allepisode แล้ว
   },
   melolo: {
-    detailPath: id => `/detail/${encodeURIComponent(id)}`,
+    detailPath: id => pathFor('melolo', 'detail', { series_id: id }),
     episodesPath: null,  // Melolo ไม่มี endpoint นี้ — ใช้ extractEpisodesFromDetail แทน
     normalizeDetail: r => {
       if (!r) return null;
@@ -494,7 +529,7 @@ const SOURCE_ADAPTERS = {
       })).sort((a, b) => a.chapterIndex - b.chapterIndex);
     },
     fetchVideoUrl: async (bookId, ep) => {
-      const v = await apiGet(`/video?id=${encodeURIComponent(bookId)}&ep=${ep}`, 'melolo');
+      const v = await apiGet(pathFor('melolo', 'video', { series_id: bookId, ep }), 'melolo');
       const list = Array.isArray(v.qualityList) ? v.qualityList : [];
       const q1080 = list.find(x => x.label === '1080p')?.url || '';
       const q720 = list.find(x => x.label === '720p')?.url || '';
@@ -511,8 +546,8 @@ const SOURCE_ADAPTERS = {
   // ShortMax — detail flat shape, /alleps wrap ใน {data:{episodes:[...]}}
   // Episode: {episode, locked, video:{video_720, video_1080, video_480}}
   shortmax: {
-    detailPath: id => `/detail/${encodeURIComponent(id)}`,
-    episodesPath: id => `/alleps/${encodeURIComponent(id)}`,
+    detailPath: id => pathFor('shortmax', 'detail', { series_id: id }),
+    episodesPath: id => pathFor('shortmax', 'alleps', { series_id: id }),
     normalizeDetail: r => {
       if (!r) return null;
       const d = r.data || r;
@@ -551,7 +586,7 @@ const SOURCE_ADAPTERS = {
   // DramaWave — /drama/{id} wrap ใน {code, data:{cover, episode_count, items:[...]}}
   // ไม่มี title ระดับ series → ใช้ items[0].name แทน. URL อยู่ใน item ครบทุกตอนแล้ว ไม่ต้อง /video
   dramawave: {
-    detailPath: id => `/drama/${encodeURIComponent(id)}`,
+    detailPath: id => pathFor('dramawave', 'detail', { series_id: id }),
     episodesPath: null,  // extract จาก detail
     normalizeDetail: r => {
       if (!r) return null;
@@ -589,7 +624,7 @@ const SOURCE_ADAPTERS = {
   // field map: shortPlayId, shortPlayName, shortPlayCover, totalEpisode, shotIntroduce, shortPlayLabels[]
   // ใช้ /watch/{id}/{ep} แยก fetch URL ตอนเล่น (lazy เหมือน Melolo)
   netshort: {
-    detailPath: id => `/drama/${encodeURIComponent(id)}`,
+    detailPath: id => pathFor('netshort', 'detail', { series_id: id }),
     episodesPath: null,
     normalizeDetail: r => {
       if (!r) return null;
@@ -624,7 +659,7 @@ const SOURCE_ADAPTERS = {
       }));
     },
     fetchVideoUrl: async (bookId, ep) => {
-      const v = await apiGet(`/watch/${encodeURIComponent(bookId)}/${encodeURIComponent(ep)}`, 'netshort');
+      const v = await apiGet(pathFor('netshort', 'video', { series_id: bookId, ep }), 'netshort');
       const d = v?.data || v || {};
       const q1080 = d['1080p_mp4'] || d['1080p'] || d.video_1080 || '';
       const q720  = d['720p_mp4']  || d['720p']  || d.video_720  || '';
@@ -644,8 +679,24 @@ const SOURCE_ADAPTERS = {
     },
   },
 };
+// Generic adapter สำหรับ source ใหม่ที่ user เพิ่มเอง (adapter key ไม่ตรงกับ 5 ตัวข้างบน)
+// ใช้ shape dramabox-like → ถ้า API response shape ไม่ตรง user ต้องเลือก adapter ที่ใกล้สุดในฟอร์ม
+function _genericAdapter(sourceKey) {
+  return {
+    detailPath: id => pathFor(sourceKey, 'detail', { series_id: id }),
+    episodesPath: id => { const tpl = SOURCE_REG[sourceKey]?.endpoints?.alleps; return tpl ? pathFor(sourceKey, 'alleps', { series_id: id }) : null; },
+    normalizeDetail: r => r,
+    normalizeEpisodes: r => Array.isArray(r) ? r : (Array.isArray(r?.items) ? r.items : []),
+    extractEpisodesFromDetail: () => null,
+    fetchVideoUrl: null,
+  };
+}
 function getAdapter(source) {
-  return SOURCE_ADAPTERS[source] || SOURCE_ADAPTERS.dramabox;
+  if (SOURCE_ADAPTERS[source]) return SOURCE_ADAPTERS[source];
+  // Fallback: ใช้ adapter ที่ registry ระบุไว้ (อาจ map หลาย source เข้า adapter ตัวเดียว) หรือ generic
+  const adapterKey = SOURCE_REG[source]?.adapter;
+  if (adapterKey && SOURCE_ADAPTERS[adapterKey]) return SOURCE_ADAPTERS[adapterKey];
+  return _genericAdapter(source);
 }
 async function apiGetDetail(bookId, source) {
   const a = getAdapter(source);
@@ -695,6 +746,31 @@ async function ensureEpisodeUrl(ep, bookId, source) {
 
 // ดึง list endpoint จาก source ที่ active — 'all' = parallel ทั้ง 2 + interleave
 // path อาจเป็น string (เหมือนกันทั้ง 2 source) หรือ spec { dramabox, melolo, filter? }
+// Locale fan-out: ถ้า source มี localeParam + locales.mode==='selected' + allowed.length → fan-out per-locale + interleave
+async function _fetchWithLocaleFanout(path, source) {
+  const reg = SOURCE_REG[source];
+  if (reg?.localeParam && reg?.locales?.mode === 'selected' && Array.isArray(reg.locales.allowed) && reg.locales.allowed.length && _isListLikePath(path)) {
+    const results = await Promise.allSettled(reg.locales.allowed.map(loc => apiGet(_appendLocaleParam(path, reg.localeParam, loc), source)));
+    const merged = [];
+    let total = 0;
+    const seen = new Set();
+    results.forEach((r, i) => {
+      if (r.status !== 'fulfilled') return;
+      const items = pickList(r.value) || [];
+      total += r.value?.total || items.length;
+      for (const it of items) {
+        const id = String(it?.series_id || it?.bookId || it?.id || '');
+        const key = id + '|' + reg.locales.allowed[i];
+        if (id && seen.has(id)) continue;
+        if (id) seen.add(id);
+        merged.push({ ...it, __locale: reg.locales.allowed[i] });
+      }
+    });
+    return { items: merged, total };
+  }
+  return apiGet(path, source);
+}
+
 async function apiGetList(pathOrSpec) {
   const isSpec = typeof pathOrSpec === 'object' && pathOrSpec !== null;
   const getPath = s => isSpec ? pathOrSpec[s] : pathOrSpec;
@@ -707,7 +783,7 @@ async function apiGetList(pathOrSpec) {
       // No endpoint for selected source → empty (UI shows "ไม่มีรายการ")
       return { items: [], total: 0, _multi: true, _buckets: API_SOURCES.map(s => ({ source: s, count: 0, skipped: !getPath(s) || s !== src })) };
     }
-    const data = await apiGet(path, src);
+    const data = await _fetchWithLocaleFanout(path, src);
     let payload = tagSource(data, src);
     const ff = getFilter(src);
     if (ff) {
@@ -719,7 +795,7 @@ async function apiGetList(pathOrSpec) {
   // 'all' mode — fetch แต่ละ source ที่มี endpoint
   const targets = API_SOURCES.map(s => ({ source: s, path: getPath(s) }));
   const fetchable = targets.filter(t => t.path);
-  const results = await Promise.allSettled(fetchable.map(t => apiGet(t.path, t.source)));
+  const results = await Promise.allSettled(fetchable.map(t => _fetchWithLocaleFanout(t.path, t.source)));
   const buckets = results.map((r, i) => {
     const source = fetchable[i].source;
     if (r.status !== 'fulfilled') return { source, items: [], total: 0, err: r.reason };
@@ -836,12 +912,26 @@ const publicConfig = {
       // Clear & refill (object refs unchanged → dependent code ที่อ้างอิงตรงๆ ยังทำงานได้)
       Object.keys(SOURCE_LABELS).forEach(k => delete SOURCE_LABELS[k]);
       Object.keys(SOURCE_BADGE_CLS).forEach(k => delete SOURCE_BADGE_CLS[k]);
+      Object.keys(SOURCE_REG).forEach(k => delete SOURCE_REG[k]);
       for (const s of list) {
         SOURCE_LABELS[s.key] = s.label || s.key;
         SOURCE_BADGE_CLS[s.key] = s.badgeClass || 'bg-zinc-700';
+        SOURCE_REG[s.key] = {
+          key: s.key,
+          adapter: s.adapter || s.key,
+          endpoints: s.endpoints || _FALLBACK_ENDPOINTS[s.adapter || s.key] || _FALLBACK_ENDPOINTS.dramabox,
+          localeParam: s.localeParam || '',
+          locales: s.locales || { mode: 'all', allowed: [] },
+        };
       }
     }
     return this.data;
+  },
+  async reload() {
+    // Force refetch — ใช้โดย source-switcher poller เพื่อ detect admin แก้ API sources
+    this.data = null;
+    this._hbSet = null;
+    return this.load();
   },
   isFreeMode() { return !!this.data?.freeMode?.enabled; },
   freeMessage() { return this.data?.freeMode?.message || ''; },
@@ -1414,6 +1504,33 @@ function attachSourceSwitcherEvents() {
   });
 }
 
+// Live source-switcher polling — detect admin แก้ API sources แล้ว re-render switcher บนทุกหน้า
+// โดยไม่ต้อง reload (30s interval, global singleton)
+let _srcSwitcherPollTimer = null;
+let _srcSwitcherSig = '';
+function _sourcesSignature() {
+  return API_SOURCES.map(s => `${s}:${SOURCE_LABELS[s] || ''}:${SOURCE_BADGE_CLS[s] || ''}`).join('|');
+}
+function startSourceSwitcherPolling() {
+  if (_srcSwitcherPollTimer) return;
+  _srcSwitcherSig = _sourcesSignature();
+  _srcSwitcherPollTimer = setInterval(async () => {
+    try {
+      await publicConfig.reload();
+      const newSig = _sourcesSignature();
+      if (newSig === _srcSwitcherSig) return;
+      _srcSwitcherSig = newSig;
+      // Source ปัจจุบันถูกลบ → reset กลับ 'all'
+      const cur = getSource();
+      if (cur !== 'all' && !API_SOURCES.includes(cur)) setSource('all');
+      document.querySelectorAll('.source-switcher').forEach(el => {
+        el.outerHTML = renderSourceSwitcherInline();
+      });
+      attachSourceSwitcherEvents();
+    } catch {}
+  }, 30_000);
+}
+
 // Global click delegation — one registration for all pages/renders
 document.addEventListener('click', e => {
   const um = document.getElementById('userMenu');
@@ -1582,6 +1699,7 @@ async function mountPage(headerKey, mainHtml, mainClass) {
   attachHeaderEvents();
   attachSourceSwitcherEvents();
   startHeartbeat();
+  startSourceSwitcherPolling();
   return main;
 }
 
@@ -1648,12 +1766,13 @@ async function initHomePage() {
   const page = Math.max(1, parseInt(qs('page') || '1', 10));
   const filter = qs('filter') || 'all';
   const size = 50;
-  // Per-source endpoint mapping — Melolo /search ไม่รองรับ keyword Thai + ไม่มี genre → ใช้ /list + client filter
-  const dList = p => `/list?page=${p}&page_size=${size}`;
-  const dThaiKeyword = encodeURIComponent('พากย์');
-  const dChineseKeyword = encodeURIComponent('จีน');
-  const dKoreanKeyword = encodeURIComponent('เกาหลี');
-  const dJapaneseKeyword = encodeURIComponent('ญี่ปุ่น');
+  // Per-source endpoint mapping — ใช้ template จาก SOURCE_REG (admin แก้ได้หลังบ้าน)
+  const listPath = (s, p) => pathFor(s, 'list', { page: p, page_size: size });
+  const searchPath = (s, kw, p) => pathFor(s, 'search', { keyword: kw, page: p, page_size: size });
+  const dThaiKeyword = 'พากย์';
+  const dChineseKeyword = 'จีน';
+  const dKoreanKeyword = 'เกาหลี';
+  const dJapaneseKeyword = 'ญี่ปุ่น';
   const thaiTitleFilter = it => {
     const t = it.title || it.bookName || '';
     if (isThaiDubKeyword(t)) return true;
@@ -1666,43 +1785,43 @@ async function initHomePage() {
   const japaneseTitleFilter = it => /ญี่ปุ่น|japanese|日本/i.test(it.title || it.bookName || '');
   const filters = [
     { key: 'all',    label: 'ทั้งหมด',
-      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, dList(p)])) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, listPath(s, p)])) },
     { key: 'thai',   label: '🇹🇭 พากย์ไทย',
       spec: p => {
-        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
-        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dThaiKeyword}&page=${p}&page_size=${size}`;
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, listPath(s, p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = searchPath('dramabox', dThaiKeyword, p);
         const filter = {};
         for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = thaiTitleFilter;
         return { ...out, filter };
       } },
     { key: 'chinese', label: '🇨🇳 จีน',
       spec: p => {
-        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
-        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dChineseKeyword}&page=${p}&page_size=${size}`;
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, listPath(s, p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = searchPath('dramabox', dChineseKeyword, p);
         const filter = {};
         for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = chineseTitleFilter;
         return { ...out, filter };
       } },
     { key: 'korean', label: '🇰🇷 เกาหลี',
       spec: p => {
-        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
-        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dKoreanKeyword}&page=${p}&page_size=${size}`;
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, listPath(s, p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = searchPath('dramabox', dKoreanKeyword, p);
         const filter = {};
         for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = koreanTitleFilter;
         return { ...out, filter };
       } },
     { key: 'japanese', label: '🇯🇵 ญี่ปุ่น',
       spec: p => {
-        const out = Object.fromEntries(API_SOURCES.map(s => [s, dList(p)]));
-        if (API_SOURCES.includes('dramabox')) out.dramabox = `/search?keyword=${dJapaneseKeyword}&page=${p}&page_size=${size}`;
+        const out = Object.fromEntries(API_SOURCES.map(s => [s, listPath(s, p)]));
+        if (API_SOURCES.includes('dramabox')) out.dramabox = searchPath('dramabox', dJapaneseKeyword, p);
         const filter = {};
         for (const s of API_SOURCES) if (s !== 'dramabox') filter[s] = japaneseTitleFilter;
         return { ...out, filter };
       } },
     { key: 'anime',  label: '🎌 การ์ตูน',
-      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? `/genre/3744?page=${p}&page_size=${size}` : null])) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 3744, page: p, page_size: size }) : null])) },
     { key: 'vip',    label: '💎 VIP',
-      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? `/genre/1265?page=${p}&page_size=${size}` : null])) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 1265, page: p, page_size: size }) : null])) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 
@@ -1734,12 +1853,14 @@ async function initHomePage() {
   maybeShowPromoPopup();
 }
 function initVipPage() {
+  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Billionaire', page: 1, page_size: PAGE_SIZE })]));
   return initBrowsePage({ active: 'vip', title: 'VIP / ท่านประธาน', subtitle: 'ซีรีส์แนว Billionaire / CEO',
-    endpoint: `/search?keyword=Billionaire&page=1&page_size=${PAGE_SIZE}` });
+    endpoint: spec });
 }
 function initRecommendPage() {
+  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Romance', page: 1, page_size: PAGE_SIZE })]));
   return initBrowsePage({ active: 'recommend', title: 'แนะนำสำหรับคุณ', subtitle: 'ซีรีส์โรแมนซ์ยอดนิยม',
-    endpoint: `/search?keyword=Romance&page=1&page_size=${PAGE_SIZE}` });
+    endpoint: spec });
 }
 
 // ============================================================
@@ -1778,14 +1899,20 @@ async function doSearch(q) {
     // Melolo: /search ไม่รับ Thai → ใช้ /list + client filter ที่ title.includes(Q)
     // ShortMax / DramaWave: ใช้ /search?keyword= ตาม spec — ถ้าไม่รับ Thai ก็จะคืน 0 รายการ (ไม่เป็นไร, source อื่นยังตอบ)
     const qLower = q.toLowerCase();
-    const qEnc = encodeURIComponent(q);
-    const res = await apiGetList({
-      dramabox: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
-      melolo: `/list?page=1&page_size=${PAGE_SIZE}`,
-      shortmax: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
-      dramawave: `/search?keyword=${qEnc}&page=1&page_size=${PAGE_SIZE}`,
-      filter: { melolo: it => String(it.title || it.bookName || '').toLowerCase().includes(qLower) },
-    });
+    const spec = {};
+    const filter = {};
+    for (const s of API_SOURCES) {
+      const reg = SOURCE_REG[s];
+      const adapter = reg?.adapter || s;
+      // Melolo /search ไม่รับ Thai → fallback /list + client filter (adapter-based ไม่ hardcode key)
+      if (adapter === 'melolo') {
+        spec[s] = pathFor(s, 'list', { page: 1, page_size: PAGE_SIZE });
+        filter[s] = it => String(it.title || it.bookName || '').toLowerCase().includes(qLower);
+      } else {
+        spec[s] = pathFor(s, 'search', { keyword: q, page: 1, page_size: PAGE_SIZE });
+      }
+    }
+    const res = await apiGetList({ ...spec, filter });
     const list = pickList(res);
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
     let bucketsNote = '';
@@ -1829,7 +1956,7 @@ async function initCategoryPage() {
   const src = getSource();
   const sourcesToLoad = src === 'all' ? API_SOURCES.slice() : [src];
   const groups = [];  // { source, cats[] | err }
-  const results = await Promise.allSettled(sourcesToLoad.map(s => apiGet('/genres', s)));
+  const results = await Promise.allSettled(sourcesToLoad.map(s => apiGet(pathFor(s, 'genres'), s)));
   results.forEach((r, i) => {
     const source = sourcesToLoad[i];
     if (r.status === 'fulfilled') {
@@ -1894,7 +2021,7 @@ async function loadCategory(cat, allCats) {
   grid.innerHTML = skeletonGrid();
   msg.innerHTML = '';
   try {
-    const res = await apiGet(`/genre/${encodeURIComponent(id)}?page=1&page_size=${PAGE_SIZE}`, source);
+    const res = await apiGet(pathFor(source, 'genre', { genre_id: id, page: 1, page_size: PAGE_SIZE }), source);
     const list = pickList(tagSource(res, source));
     const total = res?.total ? ` (ทั้งหมด ${res.total.toLocaleString()})` : '';
     msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3"><span class="text-xs px-2 py-0.5 rounded ${SOURCE_BADGE_CLS[source]} text-white font-bold mr-2">${escapeHtml(SOURCE_LABELS[source] || source)}</span><strong class="text-zinc-200">${escapeHtml(cat.name || '')}</strong> • ${list.length} เรื่อง${total}</div>`;
