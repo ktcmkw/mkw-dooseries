@@ -57,6 +57,7 @@ function publicApiSource(s) {
       mode: (s.locales && s.locales.mode === 'selected') ? 'selected' : 'all',
       allowed: Array.isArray(s.locales?.allowed) ? s.locales.allowed.slice() : [],
     },
+    fieldMap: (s.fieldMap && typeof s.fieldMap === 'object') ? { ...s.fieldMap } : {},
   };
 }
 
@@ -150,6 +151,17 @@ function sanitizeLocales(input) {
         .slice(0, 200)
     : [];
   return { mode, allowed, discovered };
+}
+// FIELD_MAP_KEYS: ชื่อ field ในแต่ละ response ที่ต้องอ่าน (ใช้ตอน response shape ของ API ใหม่ไม่ตรง 5 adapter ที่มี)
+// ค่าว่าง = ใช้ fallback chain ใน dramaCard/pickList (เช่น series_id||bookId||id)
+const FIELD_MAP_KEYS = ['itemsPath', 'idField', 'titleField', 'coverField', 'countField'];
+function sanitizeFieldMap(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const k of FIELD_MAP_KEYS) {
+    if (typeof input[k] === 'string') out[k] = input[k].trim().slice(0, 100);
+  }
+  return out;
 }
 
 const MIME = {
@@ -270,6 +282,7 @@ function applyDefaults(data) {
         if (!Array.isArray(s.locales.allowed)) s.locales.allowed = [];
         if (!Array.isArray(s.locales.discovered)) s.locales.discovered = [];
       }
+      if (!s.fieldMap || typeof s.fieldMap !== 'object') s.fieldMap = {};
     }
   }
   return data;
@@ -2137,6 +2150,7 @@ async function handleApi(req, res, pathname, query) {
         allowed: Array.isArray(s.locales?.allowed) ? s.locales.allowed.slice() : [],
         discovered: Array.isArray(s.locales?.discovered) ? s.locales.discovered.slice() : [],
       },
+      fieldMap: (s.fieldMap && typeof s.fieldMap === 'object') ? { ...s.fieldMap } : {},
       tokenAvailable: !!resolveSourceToken(s),
     }));
     return json(res, 200, { sources: list });
@@ -2162,6 +2176,7 @@ async function handleApi(req, res, pathname, query) {
     const localeParam = String(body.localeParam || '').trim().slice(0, 40);
     if (localeParam && !/^[a-zA-Z0-9_]+$/.test(localeParam)) return badRequest(res, 'localeParam: a-z 0-9 _ เท่านั้น');
     const locales = sanitizeLocales(body.locales);
+    const fieldMap = sanitizeFieldMap(body.fieldMap);
 
     data.apiSources = getApiSources(data);
     const idx = data.apiSources.findIndex(s => s.key === key);
@@ -2170,7 +2185,7 @@ async function handleApi(req, res, pathname, query) {
     if (existing?.locales?.discovered && !Array.isArray(body.locales?.discovered)) {
       locales.discovered = existing.locales.discovered;
     }
-    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter, endpoints, localeParam, locales };
+    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter, endpoints, localeParam, locales, fieldMap };
     if (idx >= 0) data.apiSources[idx] = entry; else data.apiSources.push(entry);
     await writeData(data);
     return json(res, 200, { ok: true, source: entry, tokenAvailable: !!resolveSourceToken(entry) });

@@ -1892,6 +1892,16 @@ function _parseLocales(payload) {
   return [];
 }
 
+function _notifyApiSourcesChanged() {
+  try {
+    if (typeof BroadcastChannel === 'function') {
+      const ch = new BroadcastChannel('mkw-sources');
+      ch.postMessage('api-sources-changed');
+      setTimeout(() => { try { ch.close(); } catch {} }, 100);
+    }
+  } catch {}
+}
+
 async function renderApiSourcesTab(c) {
   const { sources } = await backendGet('/api/admin/api-sources');
   c.innerHTML = `
@@ -1964,7 +1974,7 @@ async function renderApiSourcesTab(c) {
   $$('[data-del-key]').forEach(b => b.onclick = async () => {
     const key = b.dataset.delKey;
     if (!confirm(`ลบ source "${key}" ออกจาก registry?\n(ไม่กระทบ data ตอนเก่าที่ดูค้างไว้ แต่เว็บจะไม่แสดง source นี้อีก)`)) return;
-    try { await backendDelete(`/api/admin/api-sources/${encodeURIComponent(key)}`); renderApiSourcesTab(c); }
+    try { await backendDelete(`/api/admin/api-sources/${encodeURIComponent(key)}`); _notifyApiSourcesChanged(); renderApiSourcesTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   });
   $$('[data-toggle-key]').forEach(cb => cb.onchange = async () => {
@@ -1973,6 +1983,7 @@ async function renderApiSourcesTab(c) {
     if (!src) return;
     try {
       await backendPost('/api/admin/api-sources', { ...src, enabled: cb.checked });
+      _notifyApiSourcesChanged();
       $('#apiSrcResult').innerHTML = `<span class="text-emerald-400">✓ ${escapeHtml(key)} → ${cb.checked ? 'เปิด' : 'ปิด'} (มีผลทันที)</span>`;
     } catch (e) { alert('ไม่สำเร็จ: ' + e.message); cb.checked = !cb.checked; }
   });
@@ -1999,9 +2010,10 @@ function openApiSourceForm(source, c) {
   const defaultEps = { ..._ENDPOINT_PRESETS.dramabox };
   const cur = source || { key: '', label: '', badgeClass: 'bg-zinc-700', enabled: true,
     host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox',
-    endpoints: defaultEps, localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } };
+    endpoints: defaultEps, localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] }, fieldMap: {} };
   const curEps = cur.endpoints && typeof cur.endpoints === 'object' ? cur.endpoints : { ..._ENDPOINT_PRESETS[cur.adapter] || defaultEps };
   const curLocales = cur.locales || { mode: 'all', allowed: [], discovered: [] };
+  const curFm = (cur.fieldMap && typeof cur.fieldMap === 'object') ? cur.fieldMap : {};
   const overlay = document.createElement('div');
   overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center p-4';
   overlay.style.background = 'rgba(0,0,0,0.75)';
@@ -2115,6 +2127,39 @@ function openApiSourceForm(source, c) {
           </div>
         </fieldset>
 
+        <!-- ===== 5. Field mapping (custom adapter) ===== -->
+        <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-2">
+          <legend class="px-2 text-xs text-zinc-400 font-bold">⑤ Field mapping (เว้นว่าง = ใช้ adapter preset)</legend>
+          <p class="text-[10px] text-zinc-500">ระบุ key ของ JSON response เพื่อ override การ parse — ใช้เมื่อ API ส่ง shape ที่ adapter preset อ่านไม่ได้ ใส่ค่าทับเฉพาะ field ที่ต้อง</p>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-zinc-400">itemsPath <span class="text-zinc-600">(dotted)</span></label>
+              <input name="fm_itemsPath" type="text" value="${escapeHtml(curFm.itemsPath || '')}" maxlength="100" placeholder="data.records"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">idField</label>
+              <input name="fm_idField" type="text" value="${escapeHtml(curFm.idField || '')}" maxlength="100" placeholder="series_id"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">titleField</label>
+              <input name="fm_titleField" type="text" value="${escapeHtml(curFm.titleField || '')}" maxlength="100" placeholder="title"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">coverField</label>
+              <input name="fm_coverField" type="text" value="${escapeHtml(curFm.coverField || '')}" maxlength="100" placeholder="cover"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">countField <span class="text-zinc-600">(จำนวนตอน)</span></label>
+              <input name="fm_countField" type="text" value="${escapeHtml(curFm.countField || '')}" maxlength="100" placeholder="episode_count"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+          </div>
+        </fieldset>
+
         <div id="apiSrcFormMsg" class="text-xs"></div>
         <div id="apiSrcProbeOut" class="text-xs hidden bg-zinc-950 border border-zinc-800 rounded p-2 max-h-60 overflow-auto"></div>
         <div class="flex gap-2 justify-end pt-2 sticky bottom-0 bg-zinc-900 pb-1">
@@ -2162,6 +2207,11 @@ function openApiSourceForm(source, c) {
     const eps = {};
     _ENDPOINT_FIELDS.forEach(f => { eps[f.k] = form.elements[`ep_${f.k}`].value.trim(); });
     const allowed = Array.from(overlay.querySelectorAll('#apSrcLocaleList input[data-loc]:checked')).map(el => el.dataset.loc);
+    const fm = {};
+    ['itemsPath', 'idField', 'titleField', 'coverField', 'countField'].forEach(k => {
+      const v = form.elements[`fm_${k}`].value.trim();
+      if (v) fm[k] = v;
+    });
     return {
       key: form.key.value.trim().toLowerCase(),
       label: form.label.value.trim(),
@@ -2174,6 +2224,7 @@ function openApiSourceForm(source, c) {
       endpoints: eps,
       localeParam: form.localeParam.value.trim(),
       locales: { mode: form.localeMode.value, allowed, discovered: curLocales.discovered || [] },
+      fieldMap: fm,
     };
   };
 
@@ -2239,6 +2290,7 @@ function openApiSourceForm(source, c) {
     }
     try {
       const r = await backendPost('/api/admin/api-sources', body);
+      _notifyApiSourcesChanged();
       msgEl.innerHTML = `<span class="text-emerald-400">✓ บันทึกสำเร็จ${r.tokenAvailable ? '' : ' — แต่ env ' + escapeHtml(body.tokenEnv) + ' ยังว่าง'}</span>`;
       setTimeout(() => { close(); renderApiSourcesTab(c); }, 600);
     } catch (ex) {

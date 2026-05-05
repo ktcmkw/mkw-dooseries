@@ -922,6 +922,7 @@ const publicConfig = {
           endpoints: s.endpoints || _FALLBACK_ENDPOINTS[s.adapter || s.key] || _FALLBACK_ENDPOINTS.dramabox,
           localeParam: s.localeParam || '',
           locales: s.locales || { mode: 'all', allowed: [] },
+          fieldMap: (s.fieldMap && typeof s.fieldMap === 'object') ? s.fieldMap : {},
         };
       }
     }
@@ -1369,9 +1370,17 @@ function openSendAdminModal() {
   };
 }
 
-function pickList(res) {
+function pickList(res, source) {
   if (Array.isArray(res)) return res;
-  return res?.items || [];
+  // Custom fieldMap.itemsPath (เช่น 'data.records' / 'result.list')
+  if (source) {
+    const itemsPath = SOURCE_REG[source]?.fieldMap?.itemsPath;
+    if (itemsPath) {
+      const v = itemsPath.split('.').reduce((o, k) => (o == null ? o : o[k]), res);
+      if (Array.isArray(v)) return v;
+    }
+  }
+  return res?.items || res?.data?.records || res?.data?.list || res?.records || res?.list || [];
 }
 
 // ---------- Helpers ----------
@@ -1505,30 +1514,39 @@ function attachSourceSwitcherEvents() {
 }
 
 // Live source-switcher polling — detect admin แก้ API sources แล้ว re-render switcher บนทุกหน้า
-// โดยไม่ต้อง reload (30s interval, global singleton)
+// โดยไม่ต้อง reload (15s interval + BroadcastChannel cross-tab instant sync, global singleton)
 let _srcSwitcherPollTimer = null;
 let _srcSwitcherSig = '';
+let _srcSwitcherChan = null;
 function _sourcesSignature() {
   return API_SOURCES.map(s => `${s}:${SOURCE_LABELS[s] || ''}:${SOURCE_BADGE_CLS[s] || ''}`).join('|');
+}
+async function _refreshSourceSwitcher() {
+  try {
+    await publicConfig.reload();
+    const newSig = _sourcesSignature();
+    if (newSig === _srcSwitcherSig) return;
+    _srcSwitcherSig = newSig;
+    const cur = getSource();
+    if (cur !== 'all' && !API_SOURCES.includes(cur)) setSource('all');
+    document.querySelectorAll('.source-switcher').forEach(el => {
+      el.outerHTML = renderSourceSwitcherInline();
+    });
+    attachSourceSwitcherEvents();
+  } catch {}
 }
 function startSourceSwitcherPolling() {
   if (_srcSwitcherPollTimer) return;
   _srcSwitcherSig = _sourcesSignature();
-  _srcSwitcherPollTimer = setInterval(async () => {
+  _srcSwitcherPollTimer = setInterval(_refreshSourceSwitcher, 15_000);
+  if (typeof BroadcastChannel === 'function' && !_srcSwitcherChan) {
     try {
-      await publicConfig.reload();
-      const newSig = _sourcesSignature();
-      if (newSig === _srcSwitcherSig) return;
-      _srcSwitcherSig = newSig;
-      // Source ปัจจุบันถูกลบ → reset กลับ 'all'
-      const cur = getSource();
-      if (cur !== 'all' && !API_SOURCES.includes(cur)) setSource('all');
-      document.querySelectorAll('.source-switcher').forEach(el => {
-        el.outerHTML = renderSourceSwitcherInline();
-      });
-      attachSourceSwitcherEvents();
+      _srcSwitcherChan = new BroadcastChannel('mkw-sources');
+      _srcSwitcherChan.onmessage = (e) => {
+        if (e?.data === 'api-sources-changed') _refreshSourceSwitcher();
+      };
     } catch {}
-  }, 30_000);
+  }
 }
 
 // Global click delegation — one registration for all pages/renders
@@ -1594,15 +1612,16 @@ function isThaiDubKeyword(title) {
 }
 
 function dramaCard(d) {
-  const rawId = String(d.series_id || d.bookId || '');
+  const src = d.__source || 'dramabox';
+  const fm = SOURCE_REG[src]?.fieldMap || {};
+  const rawId = String((fm.idField && d[fm.idField]) || d.series_id || d.bookId || d.id || '');
   // ซ่อนซีรีส์ที่ admin ตั้ง hidden ไว้ (admin ยังเห็นจาก backend แต่ frontend filter หมดทุก role)
   if (publicConfig.data && publicConfig.hiddenBookSet().has(rawId) && auth.user?.role !== 'admin') return '';
   const id = encodeURIComponent(rawId);
-  const src = d.__source || 'dramabox';
   const srcQ = src === 'dramabox' ? '' : `&src=${encodeURIComponent(src)}`;
-  const title = d.title || d.bookName || '';
-  const cover = d.cover || d.coverWap || '';
-  const n = d.episode_count || d.chapterCount || d.totalEpisode || 0;
+  const title = (fm.titleField && d[fm.titleField]) || d.title || d.bookName || d.name || '';
+  const cover = (fm.coverField && d[fm.coverField]) || d.cover || d.coverWap || d.image || '';
+  const n = (fm.countField && d[fm.countField]) || d.episode_count || d.chapterCount || d.totalEpisode || 0;
   const firstGenre = (d.genre || '').split(',')[0].trim();
   const tLower = title.toLowerCase();
   // "พากย์ไทย" (DramaBox: เต็มคำ / Melolo: prefix "(พากย์)") + "thai dub"
