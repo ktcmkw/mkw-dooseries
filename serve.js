@@ -241,6 +241,20 @@ const DEFAULT_DATA = {
     { key: 'netshort',  label: 'Netshort',  badgeClass: 'bg-emerald-600', enabled: true,
       host: 'api.seriesjeen.online', basePath: '/api/platform/netshort',  tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'netshort',
       endpoints: endpointsFor('netshort'),  localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] } },
+    { key: 'freereels', label: 'FreeReels', badgeClass: 'bg-orange-600',  enabled: true,
+      host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'melolo',
+      endpoints: {
+        list:        '/api/platform/freereels/list?page={page}&page_size={page_size}',
+        search:      '/api/platform/freereels/search?keyword={keyword}&page={page}&page_size={page_size}',
+        detail:      '/api/platform/freereels/drama/{series_id}',
+        alleps:      '/api/platform/freereels/batchload',
+        genres:      '/api/platform/freereels/genres',
+        genre:       '/api/platform/freereels/genre/{genre_id}?page={page}&page_size={page_size}',
+        genreSearch: '/api/platform/freereels/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+        locales:     '/api/platform/freereels/locales',
+        video:       '/api/platform/freereels/drama/{series_id}/play/{episode}',
+      },
+      localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] }, fieldMap: {} },
   ],
 };
 
@@ -285,6 +299,13 @@ function applyDefaults(data) {
         if (!Array.isArray(s.locales.discovered)) s.locales.discovered = [];
       }
       if (!s.fieldMap || typeof s.fieldMap !== 'object') s.fieldMap = {};
+    }
+    // Auto-seed sources จาก DEFAULT_DATA ที่ยังไม่มีใน data.json (เช่น เพิ่ม freereels หลัง deploy)
+    const existingKeys = new Set(data.apiSources.map(s => s.key));
+    for (const seed of DEFAULT_DATA.apiSources) {
+      if (!existingKeys.has(seed.key)) {
+        data.apiSources.push(JSON.parse(JSON.stringify(seed)));
+      }
     }
   }
   return data;
