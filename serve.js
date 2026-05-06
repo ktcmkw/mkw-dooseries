@@ -317,6 +317,21 @@ function applyDefaults(data) {
         data.apiSources.push(JSON.parse(JSON.stringify(seed)));
       }
     }
+    // One-time fix: FreeReels — ถ้า user ใช้ URL Builder/admin เปลี่ยน adapter เป็น dramabox
+    // → endpoints จะ reset เป็น dramabox preset (/detail?bookId={id}, /allepisode?bookId={id})
+    // ซึ่ง upstream FreeReels ไม่รับ shape นี้ (ต้องเป็น /drama/{id} + episodes ฝังใน detail)
+    // ตรวจ signature dramabox preset แล้วรี-ตั้งให้ตรงกับ shape จริง (idempotent)
+    const free = data.apiSources.find(s => s.key === 'freereels');
+    if (free?.endpoints && (
+      free.endpoints.detail === '/detail?bookId={series_id}' ||
+      free.endpoints.alleps === '/allepisode?bookId={series_id}'
+    )) {
+      free.adapter = 'freereels';
+      free.endpoints.detail = '/drama/{series_id}';
+      free.endpoints.alleps = '';
+      free.endpoints.video = '/drama/{series_id}/play/{episode}';
+      if (!free.basePath) free.basePath = '/api/platform/freereels';
+    }
   }
   return data;
 }

@@ -628,6 +628,43 @@ const SOURCE_ADAPTERS = {
     },
     fetchVideoUrl: null,  // URL ฝังใน detail response แล้ว
   },
+  // FreeReels — wrap ลึก r.data.data.info.{name, cover, desc, episode_count, episode_list[]}
+  // Episode field: {id, name, index, unlock, video_type, m3u8_url, external_audio_h264_m3u8, external_audio_h265_m3u8}
+  freereels: {
+    detailPath: id => pathFor('freereels', 'detail', { series_id: id }),
+    episodesPath: null,  // episodes ฝังใน detail
+    normalizeDetail: r => {
+      if (!r) return null;
+      const info = r?.data?.data?.info || r?.data?.info || r?.info || r;
+      const list = Array.isArray(info?.episode_list) ? info.episode_list : [];
+      return {
+        bookId: String(info?.id || ''),
+        bookName: info?.name || '(ไม่ทราบชื่อ)',
+        coverWap: info?.cover || '',
+        cover: info?.cover || '',
+        chapterCount: Number(info?.episode_count || list.length) || 0,
+        introduction: info?.desc || '',
+        tagV3s: [],
+        playCount: '',
+        shelfTime: '',
+        corner: null,
+      };
+    },
+    normalizeEpisodes: () => [],
+    extractEpisodesFromDetail: r => {
+      const info = r?.data?.data?.info || r?.data?.info || r?.info || r || {};
+      const list = Array.isArray(info.episode_list) ? info.episode_list : [];
+      return list.map(e => ({
+        chapterIndex: Number(e.index || 0),
+        isCharge: !e.unlock && e.video_type !== 'free',
+        videoUrl: e.external_audio_h264_m3u8 || e.m3u8_url || e.external_audio_h265_m3u8 || e.video_url || '',
+        '1080p': '',
+        '720p': '',
+        '540p': '',
+      })).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
+    },
+    fetchVideoUrl: null,
+  },
   // Netshort — flat detail (ไม่มี data wrapper / ไม่มี items array)
   // field map: shortPlayId, shortPlayName, shortPlayCover, totalEpisode, shotIntroduce, shortPlayLabels[]
   // ใช้ /watch/{id}/{ep} แยก fetch URL ตอนเล่น (lazy เหมือน Melolo)
