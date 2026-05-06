@@ -815,8 +815,10 @@ async function apiGetDetail(bookId, source) {
 // คืน {detail, episodes, detailErr, epsErr} — Melolo ใช้ 1 fetch, DramaBox ใช้ 2 fetch parallel
 async function fetchDetailAndEpisodes(bookId, source) {
   const a = getAdapter(source);
-  if (a.extractEpisodesFromDetail && !a.episodesPath) {
-    // Single-fetch source (Melolo): ดึง detail แล้ว extract episodes จากนั้นเลย
+  // resolve episodesPath ก่อนตัดสินใจ — generic adapter อาจคืน null runtime ถ้า epListPath set
+  const epsPath = a.episodesPath ? a.episodesPath(bookId) : null;
+  if (a.extractEpisodesFromDetail && !epsPath) {
+    // Single-fetch source (Melolo, generic ที่ epListPath set): ดึง detail แล้ว extract episodes จากนั้นเลย
     try {
       const raw = await apiGet(a.detailPath(bookId), source);
       return {
@@ -831,7 +833,7 @@ async function fetchDetailAndEpisodes(bookId, source) {
   // Two-fetch source (DramaBox): parallel
   const [d, e] = await Promise.allSettled([
     apiGet(a.detailPath(bookId), source),
-    apiGet(a.episodesPath(bookId), source),
+    apiGet(epsPath, source),
   ]);
   return {
     detail: d.status === 'fulfilled' ? a.normalizeDetail(d.value) : null,
