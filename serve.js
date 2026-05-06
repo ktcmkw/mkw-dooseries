@@ -156,7 +156,16 @@ function sanitizeLocales(input) {
 }
 // FIELD_MAP_KEYS: ชื่อ field ในแต่ละ response ที่ต้องอ่าน (ใช้ตอน response shape ของ API ใหม่ไม่ตรง 5 adapter ที่มี)
 // ค่าว่าง = ใช้ fallback chain ใน dramaCard/pickList (เช่น series_id||bookId||id)
-const FIELD_MAP_KEYS = ['itemsPath', 'idField', 'titleField', 'coverField', 'countField'];
+// List: itemsPath/idField/titleField/coverField/countField — สำหรับ /list, /search, /genre/{id}
+// Detail: detailRoot/titleDetailField/coverDetailField/introField — สำหรับ /detail (อ่าน metadata ของซีรีส์)
+// Episodes: epListPath/epIndexField/epUrlField/epUrlField1080/epUrlField540/epIsChargeField — extract+normalize episode array
+//   ถ้าใส่ epListPath → ระบบเดาว่า episodes อยู่ใน /detail แล้ว (ไม่ fetch /alleps แยก)
+//   epListPath เป็น dotted path จาก root ของ response (เช่น "data.episodes" / "videos" / "data.items")
+const FIELD_MAP_KEYS = [
+  'itemsPath', 'idField', 'titleField', 'coverField', 'countField',
+  'detailRoot', 'titleDetailField', 'coverDetailField', 'introField',
+  'epListPath', 'epIndexField', 'epUrlField', 'epUrlField1080', 'epUrlField540', 'epIsChargeField',
+];
 function sanitizeFieldMap(input) {
   const out = {};
   if (!input || typeof input !== 'object') return out;

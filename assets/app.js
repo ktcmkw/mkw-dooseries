@@ -1784,6 +1784,7 @@ async function initBrowsePage(opts) {
 }
 
 async function initHomePage() {
+  await publicConfig.load();  // ← ต้องโหลดก่อน อ่าน API_SOURCES (admin เพิ่ม source ใหม่ runtime)
   const page = Math.max(1, parseInt(qs('page') || '1', 10));
   const filter = qs('filter') || 'all';
   const size = 50;
@@ -1873,12 +1874,14 @@ async function initHomePage() {
   await publicConfig.load();
   maybeShowPromoPopup();
 }
-function initVipPage() {
+async function initVipPage() {
+  await publicConfig.load();
   const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Billionaire', page: 1, page_size: PAGE_SIZE })]));
   return initBrowsePage({ active: 'vip', title: 'VIP / ท่านประธาน', subtitle: 'ซีรีส์แนว Billionaire / CEO',
     endpoint: spec });
 }
-function initRecommendPage() {
+async function initRecommendPage() {
+  await publicConfig.load();
   const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Romance', page: 1, page_size: PAGE_SIZE })]));
   return initBrowsePage({ active: 'recommend', title: 'แนะนำสำหรับคุณ', subtitle: 'ซีรีส์โรแมนซ์ยอดนิยม',
     endpoint: spec });
@@ -1889,6 +1892,7 @@ function initRecommendPage() {
 // ============================================================
 
 async function initSearchPage() {
+  await publicConfig.load();
   const initialQ = qs('q') || '';
   await mountPage('search', `
     <div class="flex items-center gap-3 flex-wrap mb-1">
@@ -1959,6 +1963,7 @@ async function doSearch(q) {
 // ============================================================
 
 async function initCategoryPage() {
+  await publicConfig.load();
   await mountPage('category', `
     <div class="flex items-center gap-3 flex-wrap mb-1">
       <h2 class="text-2xl sm:text-3xl font-black tracking-tight">หมวดหมู่</h2>
