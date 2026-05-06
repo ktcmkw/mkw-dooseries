@@ -332,6 +332,26 @@ function applyDefaults(data) {
       free.endpoints.video = '/drama/{series_id}/play/{episode}';
       if (!free.basePath) free.basePath = '/api/platform/freereels';
     }
+    // One-time fix: reelife (user เพิ่มผ่าน URL Builder ตั้ง adapter='shortmax' — shape ไม่ match)
+    // → adapter='reelife' (ตกไป generic adapter ที่ใช้ fieldMap), set detail = /book/{id},
+    //   episodes ฝังใน detail.data.chapterContentList, video URL อยู่ใน mp4720p
+    // Idempotent: ถ้า fieldMap.epListPath มีแล้วจะข้าม
+    const reelife = data.apiSources.find(s => s.key === 'reelife');
+    if (reelife && !reelife.fieldMap?.epListPath && reelife.endpoints?.detail !== '/book/{series_id}') {
+      reelife.adapter = 'reelife';
+      reelife.endpoints.detail = '/book/{series_id}';
+      reelife.endpoints.alleps = '';
+      reelife.endpoints.video = '';
+      reelife.fieldMap = {
+        ...(reelife.fieldMap || {}),
+        detailRoot:      'data.bookVo',
+        introField:      'introduction',
+        epListPath:      'data.chapterContentList',
+        epIndexField:    'chapterId',
+        epUrlField:      'mp4720p',
+        epIsChargeField: 'isCharge',
+      };
+    }
   }
   return data;
 }

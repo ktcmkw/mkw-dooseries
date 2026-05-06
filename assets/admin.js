@@ -2140,6 +2140,8 @@ function openApiSourceForm(source, c) {
         <fieldset class="border border-zinc-800 rounded-lg p-3 space-y-2">
           <legend class="px-2 text-xs text-zinc-400 font-bold">⑤ การอ่าน response (เว้นว่าง = ใช้ค่าเริ่มต้นของ adapter)</legend>
           <p class="text-[10px] text-zinc-500">ระบุชื่อ field ใน JSON response เพื่อ override การอ่าน — ใช้เฉพาะเมื่อ API ส่ง shape ที่ adapter preset อ่านไม่ได้ ใส่เฉพาะช่องที่ต้อง</p>
+
+          <div class="text-[11px] text-zinc-400 font-bold mt-2 border-t border-zinc-800 pt-2">📋 List (รายการในหน้าแรก/ค้นหา/หมวด)</div>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
             <div>
               <label class="text-xs text-zinc-400">itemsPath — ตำแหน่ง array รายการ <span class="text-zinc-600">(ใช้จุดคั่น)</span></label>
@@ -2164,6 +2166,65 @@ function openApiSourceForm(source, c) {
             <div>
               <label class="text-xs text-zinc-400">countField — ชื่อ field ของจำนวนตอน</label>
               <input name="fm_countField" type="text" value="${escapeHtml(curFm.countField || '')}" maxlength="100" placeholder="episode_count"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+          </div>
+
+          <div class="text-[11px] text-zinc-400 font-bold mt-3 border-t border-zinc-800 pt-2">🎬 Detail (หน้ารายละเอียดซีรีส์)</div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-zinc-400">detailRoot — ตำแหน่ง object ใน /detail response</label>
+              <input name="fm_detailRoot" type="text" value="${escapeHtml(curFm.detailRoot || '')}" maxlength="100" placeholder="data.bookVo"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">titleDetailField — ชื่อเรื่อง <span class="text-zinc-600">(ถ้าต่างจาก list)</span></label>
+              <input name="fm_titleDetailField" type="text" value="${escapeHtml(curFm.titleDetailField || '')}" maxlength="100" placeholder="bookName"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">coverDetailField — ภาพปก <span class="text-zinc-600">(ถ้าต่างจาก list)</span></label>
+              <input name="fm_coverDetailField" type="text" value="${escapeHtml(curFm.coverDetailField || '')}" maxlength="100" placeholder="coverWap"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">introField — คำอธิบายเรื่องย่อ</label>
+              <input name="fm_introField" type="text" value="${escapeHtml(curFm.introField || '')}" maxlength="100" placeholder="introduction"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+          </div>
+
+          <div class="text-[11px] text-zinc-400 font-bold mt-3 border-t border-zinc-800 pt-2">📺 Episodes (ตอน/ลิงก์วิดีโอ)</div>
+          <p class="text-[10px] text-zinc-500">ใส่ <span class="font-mono text-zinc-400">epListPath</span> = array ตอนฝังใน /detail (เช่น <span class="font-mono">data.chapterContentList</span>) → ระบบจะไม่ fetch /alleps แยก</p>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-zinc-400">epListPath — ตำแหน่ง array ตอน</label>
+              <input name="fm_epListPath" type="text" value="${escapeHtml(curFm.epListPath || '')}" maxlength="100" placeholder="data.chapterContentList"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">epIndexField — เลขตอน (1, 2, 3 ...)</label>
+              <input name="fm_epIndexField" type="text" value="${escapeHtml(curFm.epIndexField || '')}" maxlength="100" placeholder="chapterId"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">epUrlField — URL วิดีโอหลัก</label>
+              <input name="fm_epUrlField" type="text" value="${escapeHtml(curFm.epUrlField || '')}" maxlength="100" placeholder="mp4720p"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">epUrlField1080 <span class="text-zinc-600">(ถ้ามีคุณภาพแยก)</span></label>
+              <input name="fm_epUrlField1080" type="text" value="${escapeHtml(curFm.epUrlField1080 || '')}" maxlength="100" placeholder="video_1080"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">epUrlField540 <span class="text-zinc-600">(ถ้ามีคุณภาพแยก)</span></label>
+              <input name="fm_epUrlField540" type="text" value="${escapeHtml(curFm.epUrlField540 || '')}" maxlength="100" placeholder="video_540"
+                class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+            </div>
+            <div>
+              <label class="text-xs text-zinc-400">epIsChargeField — flag ตอนเสียเงิน</label>
+              <input name="fm_epIsChargeField" type="text" value="${escapeHtml(curFm.epIsChargeField || '')}" maxlength="100" placeholder="isCharge"
                 class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
             </div>
           </div>
@@ -2217,8 +2278,11 @@ function openApiSourceForm(source, c) {
     _ENDPOINT_FIELDS.forEach(f => { eps[f.k] = form.elements[`ep_${f.k}`].value.trim(); });
     const allowed = Array.from(overlay.querySelectorAll('#apSrcLocaleList input[data-loc]:checked')).map(el => el.dataset.loc);
     const fm = {};
-    ['itemsPath', 'idField', 'titleField', 'coverField', 'countField'].forEach(k => {
-      const v = form.elements[`fm_${k}`].value.trim();
+    ['itemsPath', 'idField', 'titleField', 'coverField', 'countField',
+     'detailRoot', 'titleDetailField', 'coverDetailField', 'introField',
+     'epListPath', 'epIndexField', 'epUrlField', 'epUrlField1080', 'epUrlField540', 'epIsChargeField'].forEach(k => {
+      const el = form.elements[`fm_${k}`];
+      const v = el ? el.value.trim() : '';
       if (v) fm[k] = v;
     });
     return {
@@ -2502,6 +2566,22 @@ async function renderUrlBuilderTab(c) {
     const localesRes = results.find(r => r.k === 'locales');
     const localeList = localesRes && localesRes.ok ? _parseLocales(localesRes.payload) : [];
 
+    // Auto-probe /detail ของ items[0] เพื่อ detect detailRoot / introField / epListPath / epIndexField / epUrlField / epIsChargeField
+    let detailAuto = null;
+    const firstId = items[0][fieldMap.idField];
+    if (firstId && templates.detail) {
+      try {
+        const r = await backendPost(`/api/admin/api-sources/${probeKey}/probe`, {
+          endpoint: 'detail', template: templates.detail,
+          vars: { series_id: String(firstId) }, overrides,
+        });
+        if (r.ok && r.payload) {
+          detailAuto = _ubGuessDetailFieldMap(r.payload);
+          Object.assign(fieldMap, detailAuto.guessed);
+        }
+      } catch {}
+    }
+
     _ubState = {
       key, label, adapter, adapterLabel, host, basePath, tokenEnv,
       templates, fieldMap, items, localeList,
@@ -2518,6 +2598,20 @@ async function renderUrlBuilderTab(c) {
             cover=<span class="text-zinc-300">${escapeHtml(fieldMap.coverField)}</span>
           </div>
         </div>
+        ${detailAuto ? `
+          <div class="bg-zinc-950/50 border border-emerald-900/50 rounded p-2 mb-2">
+            <div class="text-[10px] font-bold text-emerald-400 mb-1">🤖 Auto-detected จาก /detail (เก็บเข้า fieldMap):</div>
+            <div class="text-[10px] text-zinc-400 font-mono leading-relaxed">
+              ${detailAuto.guessed.detailRoot ? `detailRoot=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.detailRoot)}</span>, ` : ''}
+              ${fieldMap.introField ? `intro=<span class="text-emerald-300">${escapeHtml(fieldMap.introField)}</span>, ` : ''}
+              ${detailAuto.guessed.epListPath ? `epListPath=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.epListPath)}</span>, ` : ''}
+              ${detailAuto.guessed.epIndexField ? `epIdx=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.epIndexField)}</span>, ` : ''}
+              ${detailAuto.guessed.epUrlField ? `epUrl=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.epUrlField)}</span>, ` : ''}
+              ${detailAuto.guessed.epIsChargeField ? `epLocked=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.epIsChargeField)}</span>` : ''}
+            </div>
+            ${detailAuto.warnings.length ? `<div class="text-[10px] text-amber-400 mt-1">⚠ ${detailAuto.warnings.map(w => escapeHtml(w)).join(' • ')}</div>` : ''}
+          </div>
+        ` : ''}
         <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
           ${items.slice(0, 12).map((it, i) => {
             const id = it[fieldMap.idField];
@@ -2654,4 +2748,63 @@ function _ubGuessFieldMap(sample, itemsPath) {
     coverField: find(['cover', 'coverUrl', 'cover_url', 'image', 'imageUrl', 'image_url', 'poster', 'posterUrl', 'thumb', 'thumbnail', 'pic', 'picture']),
     countField: find(['episode_count', 'episodeCount', 'totalEp', 'total_ep', 'epCount', 'chapter_count', 'chapterCount', 'chapterCnt']),
   };
+}
+
+// Auto-detect detail/episode fields จาก /detail response (สำหรับ URL Builder)
+// Walks response เพื่อหา:
+//   detailRoot:  dotted path ไปยัง object ที่มี title-like + cover-like field
+//   introField:  field ใน detailRoot ที่เป็น string ยาว (description/intro)
+//   epListPath:  dotted path ไป array ที่ items มี url-like field
+//   epIndexField/epUrlField/epIsChargeField: field ของ items[0] ใน array นั้น
+function _ubGuessDetailFieldMap(payload) {
+  const guessed = {};
+  const warnings = [];
+  if (!payload || typeof payload !== 'object') {
+    warnings.push('detail response ว่างหรือไม่ใช่ object');
+    return { guessed, warnings };
+  }
+  // หา detailRoot — walk ลึกสุด 4 ชั้น เพื่อหา object ที่มี title + cover
+  const titleCands = ['title', 'name', 'bookName', 'series_name', 'seriesTitle', 'dramaName', 'shortPlayName'];
+  const coverCands = ['cover', 'coverWap', 'coverUrl', 'image', 'imageUrl', 'poster', 'shortPlayCover'];
+  const introCands = ['introduction', 'intro', 'description', 'desc', 'summary', 'shotIntroduce', 'shortIntroduce'];
+  const epListCands = ['chapterContentList', 'episode_list', 'episodes', 'episodeList', 'chapters', 'chapterList', 'items', 'list'];
+  const epIdxCands = ['chapterId', 'chapterIndex', 'index', 'episode', 'ep', 'serial_number'];
+  const epUrlCands = ['mp4720p', 'mp41080p', 'mp4540p', 'm3u8_url', 'videoUrl', 'video_url', 'url', 'playUrl', 'video_1080', 'video_720', 'video_540', 'video_480'];
+  const epChargeCands = ['isCharge', 'locked', 'charge'];
+
+  function walk(obj, path, depth) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || depth > 4) return;
+    const keys = Object.keys(obj);
+    const hasTitle = titleCands.find(k => typeof obj[k] === 'string' && obj[k]);
+    const hasCover = coverCands.find(k => typeof obj[k] === 'string' && obj[k]);
+    if (hasTitle && hasCover && !guessed.detailRoot) {
+      guessed.detailRoot = path;
+      const intro = introCands.find(k => typeof obj[k] === 'string' && obj[k].length > 20);
+      if (intro) guessed.introField = intro;
+    }
+    // หา ep list array
+    for (const k of keys) {
+      const v = obj[k];
+      if (Array.isArray(v) && v.length && typeof v[0] === 'object' && !guessed.epListPath) {
+        const item = v[0];
+        const hasUrl = epUrlCands.find(c => typeof item[c] === 'string' && /\.(mp4|m3u8|ts)/.test(item[c]));
+        const hasIdx = epIdxCands.find(c => item[c] !== undefined && Number(item[c]) > 0);
+        if (hasUrl && hasIdx) {
+          guessed.epListPath = path ? `${path}.${k}` : k;
+          guessed.epIndexField = hasIdx;
+          guessed.epUrlField = hasUrl;
+          const charge = epChargeCands.find(c => item[c] !== undefined);
+          if (charge) guessed.epIsChargeField = charge;
+        }
+      }
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        walk(v, path ? `${path}.${k}` : k, depth + 1);
+      }
+    }
+  }
+  walk(payload, '', 0);
+
+  if (!guessed.detailRoot) warnings.push('หา detail root object ไม่เจอ — อาจต้องใส่ detailRoot manual');
+  if (!guessed.epListPath) warnings.push('หา episode list ไม่เจอใน detail — อาจต้อง fetch /alleps แยก');
+  return { guessed, warnings };
 }

@@ -724,15 +724,79 @@ const SOURCE_ADAPTERS = {
     },
   },
 };
-// Generic adapter สำหรับ source ใหม่ที่ user เพิ่มเอง (adapter key ไม่ตรงกับ 5 ตัวข้างบน)
-// ใช้ shape dramabox-like → ถ้า API response shape ไม่ตรง user ต้องเลือก adapter ที่ใกล้สุดในฟอร์ม
+// Generic adapter สำหรับ source ใหม่ที่ user เพิ่มเอง (adapter key ไม่ตรงกับ 5 preset)
+// ใช้ fieldMap (15 keys) อ่านค่าจาก response shape ใดก็ได้ → ไม่ต้องเขียนโค้ดต่อ source ใหม่
+// ถ้า field ใน fieldMap ว่าง → fallback chain จะลองชื่อ field ที่นิยมใน 5 adapter ที่มี
+function _walkDotted(obj, path) {
+  if (!path) return obj;
+  return String(path).split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+}
+function _pickField(obj, fieldName, fallbacks) {
+  if (!obj) return undefined;
+  if (fieldName && obj[fieldName] !== undefined) return obj[fieldName];
+  for (const k of (fallbacks || [])) if (obj[k] !== undefined) return obj[k];
+  return undefined;
+}
+function _mapEpisodes(arr, f) {
+  return (arr || []).map(e => {
+    const idx = Number(_pickField(e, f.epIndexField, ['index','chapterIndex','episode','ep','chapterId','serial_number']) || 0);
+    const url      = _pickField(e, f.epUrlField,     ['mp4720p','m3u8_url','videoUrl','video_url','url','playUrl']) || '';
+    const url1080  = _pickField(e, f.epUrlField1080, ['mp41080p','video_1080','1080p_mp4','1080p']) || '';
+    const url540   = _pickField(e, f.epUrlField540,  ['mp4540p','video_540','video_480','540p_mp4','540p']) || '';
+    return {
+      chapterIndex: idx,
+      isCharge: !!_pickField(e, f.epIsChargeField, ['isCharge','locked','charge']),
+      videoUrl: url || url1080 || url540 || '',
+      '1080p': url1080,
+      '720p': '',
+      '540p': url540,
+    };
+  }).filter(x => x.chapterIndex > 0).sort((a, b) => a.chapterIndex - b.chapterIndex);
+}
 function _genericAdapter(sourceKey) {
+  const reg = () => SOURCE_REG[sourceKey] || {};
+  const fm  = () => reg().fieldMap || {};
   return {
     detailPath: id => pathFor(sourceKey, 'detail', { series_id: id }),
-    episodesPath: id => { const tpl = SOURCE_REG[sourceKey]?.endpoints?.alleps; return tpl ? pathFor(sourceKey, 'alleps', { series_id: id }) : null; },
-    normalizeDetail: r => r,
-    normalizeEpisodes: r => Array.isArray(r) ? r : (Array.isArray(r?.items) ? r.items : []),
-    extractEpisodesFromDetail: () => null,
+    episodesPath: id => {
+      // ถ้า user ตั้ง epListPath = episodes ฝังใน detail → ไม่ fetch /alleps แยก
+      if (fm().epListPath) return null;
+      const tpl = reg().endpoints?.alleps;
+      return tpl ? pathFor(sourceKey, 'alleps', { series_id: id }) : null;
+    },
+    normalizeDetail: r => {
+      if (!r) return null;
+      const f = fm();
+      const root = f.detailRoot ? _walkDotted(r, f.detailRoot) : (r.data || r);
+      if (!root || typeof root !== 'object') return null;
+      const cover = _pickField(root, f.coverDetailField || f.coverField, ['cover','coverWap','image']) || '';
+      return {
+        bookId:        String(_pickField(root, f.idField, ['series_id','bookId','id']) || ''),
+        bookName:      _pickField(root, f.titleDetailField || f.titleField, ['title','name','bookName']) || '(ไม่ทราบชื่อ)',
+        coverWap:      cover,
+        cover:         cover,
+        chapterCount:  Number(_pickField(root, f.countField, ['episode_count','episodeCount','chapterCount','totalEpisode','lastChapterId']) || 0) || 0,
+        introduction:  _pickField(root, f.introField, ['introduction','intro','description','desc','summary']) || '',
+        tagV3s: [], playCount: '', shelfTime: '', corner: null,
+      };
+    },
+    normalizeEpisodes: r => {
+      const f = fm();
+      const arr = f.epListPath
+        ? _walkDotted(r, f.epListPath)
+        : (Array.isArray(r) ? r
+           : (Array.isArray(r?.episodes) ? r.episodes
+           : (Array.isArray(r?.data?.episodes) ? r.data.episodes
+           : (Array.isArray(r?.items) ? r.items
+           : (Array.isArray(r?.data?.items) ? r.data.items : [])))));
+      return _mapEpisodes(Array.isArray(arr) ? arr : [], f);
+    },
+    extractEpisodesFromDetail: r => {
+      const f = fm();
+      if (!f.epListPath) return null;  // ไม่มี → ใช้ episodesPath endpoint
+      const arr = _walkDotted(r, f.epListPath);
+      return Array.isArray(arr) ? _mapEpisodes(arr, f) : [];
+    },
     fetchVideoUrl: null,
   };
 }
