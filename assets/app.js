@@ -2705,7 +2705,7 @@ async function playEpisode(ep, ctx) {
   const firstTime = !video;
   if (firstTime) {
     wrap.classList.add('relative');
-    wrap.innerHTML = `<video id="player" playsinline disablepictureinpicture class="absolute inset-0 w-full h-full bg-black" oncontextmenu="return false"></video>`;
+    wrap.innerHTML = `<video id="player" playsinline class="absolute inset-0 w-full h-full bg-black" oncontextmenu="return false"></video>`;
     video = wrap.querySelector('#player');
     buildCustomControls(video, wrap);
   } else if (video._ctrl) {
@@ -2838,8 +2838,12 @@ function buildCustomControls(video, wrap) {
           <button id="playPauseBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="play/pause">▶</button>
           <span class="tabular-nums"><span id="curTime">0:00</span> / <span id="totTime">0:00</span></span>
         </div>
-        <div class="flex items-center gap-2">
-          <button id="muteBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="mute">🔊</button>
+        <div class="flex items-center gap-1 sm:gap-2">
+          <div class="flex items-center gap-1">
+            <button id="muteBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="mute">🔊</button>
+            <input id="volSlider" type="range" min="0" max="100" value="100" class="w-14 sm:w-20 h-1 accent-red-500 cursor-pointer" aria-label="volume"/>
+          </div>
+          <button id="pipBtn" class="w-8 h-8 flex items-center justify-center text-base" aria-label="picture in picture" title="Picture in Picture">⧉</button>
           <button id="pointsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="พ้อยออนไลน์" title="พ้อยออนไลน์">⭐</button>
           <button id="fsBtn" class="w-8 h-8 flex items-center justify-center text-lg" aria-label="fullscreen">⛶</button>
         </div>
@@ -2858,6 +2862,7 @@ function bindCustomControls(video, wrap, ctrl, playerOpts) {
   const q = sel => overlay.querySelector(sel);
   const seekBar = q('#seekBar'), curTime = q('#curTime'), totTime = q('#totTime');
   const playPauseBtn = q('#playPauseBtn'), fsBtn = q('#fsBtn'), muteBtn = q('#muteBtn'), pointsBtn = q('#pointsBtn');
+  const volSlider = q('#volSlider'), pipBtn = q('#pipBtn');
   const zoneL = q('#zoneL'), zoneC = q('#zoneC'), zoneR = q('#zoneR');
   const qualityBtn = q('#qualityBtn'), qualityLabel = q('#qualityLabel'), qMenu = q('#qMenu');
 
@@ -2978,16 +2983,64 @@ function bindCustomControls(video, wrap, ctrl, playerOpts) {
     showCtrls();
   }, opts);
 
-  // ---- Mute ----
-  const updateMuteUI = () => { muteBtn.textContent = video.muted || video.volume === 0 ? '🔇' : '🔊'; };
+  // ---- Mute + Volume ----
+  const savedVol = parseFloat(localStorage.getItem('mkw_volume'));
+  if (!isNaN(savedVol) && savedVol >= 0 && savedVol <= 1) video.volume = savedVol;
+  const updateVolUI = () => {
+    const v = video.muted ? 0 : video.volume;
+    muteBtn.textContent = v === 0 ? '🔇' : v < 0.5 ? '🔉' : '🔊';
+    if (volSlider && document.activeElement !== volSlider) {
+      volSlider.value = Math.round(v * 100);
+    }
+  };
   muteBtn.addEventListener('click', e => {
     e.stopPropagation();
     video.muted = !video.muted;
-    updateMuteUI();
     showCtrls();
   }, opts);
-  video.addEventListener('volumechange', updateMuteUI, opts);
-  updateMuteUI();
+  if (volSlider) {
+    volSlider.addEventListener('input', e => {
+      e.stopPropagation();
+      const v = parseInt(volSlider.value, 10) / 100;
+      video.volume = v;
+      video.muted = v === 0;
+      localStorage.setItem('mkw_volume', String(v));
+      showCtrls();
+    }, opts);
+    volSlider.addEventListener('click', e => e.stopPropagation(), opts);
+    volSlider.addEventListener('pointerdown', e => e.stopPropagation(), opts);
+  }
+  video.addEventListener('volumechange', () => {
+    if (!video.muted && video.volume > 0) localStorage.setItem('mkw_volume', String(video.volume));
+    updateVolUI();
+  }, opts);
+  updateVolUI();
+
+  // ---- Picture-in-Picture ----
+  if (pipBtn) {
+    const pipMode = (() => {
+      if (document.pictureInPictureEnabled && !video.disablePictureInPicture) return 'standard';
+      if (typeof video.webkitSupportsPresentationMode === 'function' && video.webkitSupportsPresentationMode('picture-in-picture')) return 'webkit';
+      return null;
+    })();
+    if (!pipMode) {
+      pipBtn.style.display = 'none';
+    } else {
+      pipBtn.addEventListener('click', async e => {
+        e.stopPropagation();
+        try {
+          if (pipMode === 'standard') {
+            if (document.pictureInPictureElement) await document.exitPictureInPicture();
+            else await video.requestPictureInPicture();
+          } else {
+            const cur = video.webkitPresentationMode;
+            video.webkitSetPresentationMode(cur === 'picture-in-picture' ? 'inline' : 'picture-in-picture');
+          }
+        } catch {}
+        showCtrls();
+      }, opts);
+    }
+  }
 
   // ---- OnlinePoint button → เปิด popup กลับมา (ล้าง flag hidden) ----
   if (pointsBtn) {
