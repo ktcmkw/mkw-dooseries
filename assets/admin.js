@@ -2049,10 +2049,12 @@ function openApiSourceForm(source, c) {
             </div>
             <div>
               <label class="text-xs text-zinc-400">Adapter — รูปแบบ response</label>
-              <select name="adapter" class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded">
-                ${_ADAPTERS.map(a => `<option value="${a}" ${a === cur.adapter ? 'selected' : ''}>${a}</option>`).join('')}
-              </select>
-              <p class="text-[10px] text-zinc-500 mt-0.5">กำหนดรูปแบบการอ่าน response + เติมเส้นทาง preset อัตโนมัติ</p>
+              <input name="adapter" type="text" list="apSrcAdapterList" value="${escapeHtml(cur.adapter || '')}" required maxlength="30"
+                class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+              <datalist id="apSrcAdapterList">
+                ${_ADAPTERS.map(a => `<option value="${a}">`).join('')}
+              </datalist>
+              <p class="text-[10px] text-zinc-500 mt-0.5">เลือก preset (5 ตัว) หรือพิมพ์ชื่อใหม่ — adapter นอก preset จะใช้ generic adapter อ่านผ่าน fieldMap</p>
             </div>
           </div>
           <label class="flex items-center gap-2 px-3 py-2 bg-zinc-950/50 rounded">
@@ -2496,7 +2498,7 @@ async function renderUrlBuilderTab(c) {
     const segLast = (basePath.split('/').filter(Boolean).pop() || '').toLowerCase();
     const key = (keyEl.value.trim() || segLast).toLowerCase();
     const adapterRaw = (adapterEl.value.trim() || segLast).toLowerCase();
-    const adapter = _ADAPTERS.includes(adapterRaw) ? adapterRaw : 'dramabox';
+    const adapter = adapterRaw || 'dramabox';
     const adapterLabel = adapterRaw || 'dramabox';
     const tokenEnv = ($('#ubTokenEnv').value.trim() || 'SERIESJEEN_TOKEN').toUpperCase();
     const label = labelEl.value.trim() || segLast || key;
@@ -2506,7 +2508,7 @@ async function renderUrlBuilderTab(c) {
       return;
     }
 
-    const templates = { ..._ENDPOINT_PRESETS[adapter] };
+    const templates = { ...(_ENDPOINT_PRESETS[adapter] || _ENDPOINT_PRESETS.dramabox) };
     const overrides = { host, basePath, tokenEnv, adapter };
     const probeKey = encodeURIComponent(key || 'new');
 
