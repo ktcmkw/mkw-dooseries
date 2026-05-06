@@ -36,6 +36,7 @@ async function initAdminPage() {
       <button data-tab="loginlog"  class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔐 Login Log</button>
       <button data-tab="seenbooks" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🆕 หนังใหม่</button>
       <button data-tab="apisources" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🎬 API Sources</button>
+      <button data-tab="urlbuilder" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔧 URL Builder</button>
     </div>
     <div id="tabContent"></div>
   `);
@@ -74,6 +75,7 @@ async function loadTab(tab) {
     if (tab === 'loginlog')  return renderLoginLogTab(c);
     if (tab === 'seenbooks') return renderSeenBooksTab(c);
     if (tab === 'apisources') return renderApiSourcesTab(c);
+    if (tab === 'urlbuilder') return renderUrlBuilderTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
   }
@@ -2316,4 +2318,332 @@ function _renderLocaleCheckboxes(discovered, allowed) {
           ${l.name && l.name !== l.id ? `<span class="text-zinc-500 truncate">${escapeHtml(l.name)}</span>` : ''}
         </label>`).join('')}
     </div>`;
+}
+
+// ============================================================
+// URL Builder Tab — auto-create API Source from a Base URL,
+// probe endpoints, preview poster grid, save into API Sources
+// (uses existing /api/admin/api-sources + /probe endpoints)
+// ============================================================
+async function renderUrlBuilderTab(c) {
+  c.innerHTML = `
+    <div class="flex items-center gap-3 mb-3 flex-wrap">
+      <div class="flex-1 min-w-0">
+        <h3 class="font-bold text-zinc-200">🔧 URL Builder — สร้าง API Source อัตโนมัติ</h3>
+        <p class="text-xs text-zinc-500 mt-1 leading-relaxed">
+          กรอก Base URL ของ API → ระบบ auto-detect adapter, probe /list /genres /locales, แสดง poster preview, ตรวจสอบโครงสร้าง response → บันทึกเป็น API Source ใหม่ที่หน้าเว็บใช้ได้ทันที
+        </p>
+      </div>
+    </div>
+
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+      <div>
+        <label class="text-xs text-zinc-400">Base URL (host + basePath เต็ม)</label>
+        <input id="ubBase" type="text" value="https://api.seriesjeen.online/api/platform/freereels"
+          placeholder="https://api.seriesjeen.online/api/platform/<adapter>"
+          class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono text-sm"/>
+        <p class="text-[10px] text-zinc-500 mt-0.5">ระบบจะแยก host + basePath ให้อัตโนมัติ และเดา adapter จาก segment สุดท้ายของ path</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div>
+          <label class="text-xs text-zinc-400">Source key</label>
+          <input id="ubKey" type="text" placeholder="(auto จาก URL)" pattern="[a-z0-9_-]{2,30}"
+            class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">Label (ชื่อแสดง)</label>
+          <input id="ubLabel" type="text" placeholder="(auto)"
+            class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs"/>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">Adapter (รูปแบบ response)</label>
+          <input id="ubAdapter" type="text" list="ubAdapterList" placeholder="(auto / dramabox)"
+            class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+          <datalist id="ubAdapterList">
+            ${_ADAPTERS.map(a => `<option value="${a}">`).join('')}
+          </datalist>
+          <p class="text-[10px] text-zinc-500 mt-0.5">ถ้าใช้ adapter ใหม่นอก list — ระบบจะใช้ preset dramabox + auto-detect fields</p>
+        </div>
+        <div>
+          <label class="text-xs text-zinc-400">Token env (ใน Render)</label>
+          <input id="ubTokenEnv" type="text" value="SERIESJEEN_TOKEN" pattern="[A-Z0-9_]*"
+            class="w-full mt-1 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded font-mono text-xs"/>
+        </div>
+      </div>
+
+      <div class="flex gap-2 flex-wrap items-center">
+        <button id="ubProbe" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded">🔍 Probe & Preview</button>
+        <button id="ubSave" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded disabled:opacity-40 disabled:cursor-not-allowed" disabled>→ บันทึกเป็น API Source</button>
+        <span id="ubStatus" class="text-xs"></span>
+      </div>
+    </div>
+
+    <div id="ubProbeResult" class="mt-4"></div>
+    <div id="ubPoster" class="mt-4"></div>
+    <div id="ubDetail" class="mt-4"></div>
+  `;
+
+  const baseEl = $('#ubBase');
+  const keyEl = $('#ubKey');
+  const labelEl = $('#ubLabel');
+  const adapterEl = $('#ubAdapter');
+  let _ubState = null;
+
+  function _ubAutoFill() {
+    let seg = '';
+    try {
+      const u = new URL(baseEl.value.trim());
+      seg = (u.pathname.split('/').filter(Boolean).pop() || '').toLowerCase();
+    } catch {}
+    if (seg) {
+      keyEl.placeholder = seg;
+      labelEl.placeholder = seg;
+      adapterEl.placeholder = _ADAPTERS.includes(seg) ? seg : '(custom — ใช้ preset dramabox)';
+    }
+  }
+  baseEl.oninput = _ubAutoFill;
+  _ubAutoFill();
+
+  $('#ubProbe').onclick = () => _ubProbe();
+  $('#ubSave').onclick = () => _ubSave();
+
+  async function _ubProbe() {
+    const status = $('#ubStatus');
+    const resultEl = $('#ubProbeResult');
+    const posterEl = $('#ubPoster');
+    const detailEl = $('#ubDetail');
+    detailEl.innerHTML = '';
+
+    let parsed;
+    try { parsed = new URL(baseEl.value.trim()); }
+    catch { status.innerHTML = '<span class="text-red-400">Base URL ไม่ถูกต้อง</span>'; return; }
+
+    const host = parsed.host;
+    const basePath = parsed.pathname.replace(/\/$/, '');
+    const segLast = (basePath.split('/').filter(Boolean).pop() || '').toLowerCase();
+    const key = (keyEl.value.trim() || segLast).toLowerCase();
+    const adapterRaw = (adapterEl.value.trim() || segLast).toLowerCase();
+    const adapter = _ADAPTERS.includes(adapterRaw) ? adapterRaw : 'dramabox';
+    const adapterLabel = adapterRaw || 'dramabox';
+    const tokenEnv = ($('#ubTokenEnv').value.trim() || 'SERIESJEEN_TOKEN').toUpperCase();
+    const label = labelEl.value.trim() || segLast || key;
+
+    if (!/^[a-z0-9_-]{2,30}$/.test(key)) {
+      status.innerHTML = '<span class="text-red-400">key ไม่ถูกต้อง (a-z 0-9 _ - 2-30 ตัว)</span>';
+      return;
+    }
+
+    const templates = { ..._ENDPOINT_PRESETS[adapter] };
+    const overrides = { host, basePath, tokenEnv, adapter };
+    const probeKey = encodeURIComponent(key || 'new');
+
+    status.innerHTML = '<span class="text-zinc-400">⏳ probing /list /genres /locales...</span>';
+    resultEl.innerHTML = '';
+    posterEl.innerHTML = '';
+    $('#ubSave').disabled = true;
+
+    const probes = [
+      { k: 'list',    vars: { page: 1, page_size: 12 } },
+      { k: 'genres',  vars: {} },
+      { k: 'locales', vars: {} },
+    ];
+    const results = await Promise.all(probes.map(async ({ k, vars }) => {
+      const tpl = templates[k];
+      if (!tpl) return { k, ok: false, error: 'no template (preset ว่างสำหรับ adapter นี้)' };
+      try {
+        const r = await backendPost(`/api/admin/api-sources/${probeKey}/probe`, {
+          endpoint: k, template: tpl, vars, overrides,
+        });
+        return { k, ...r };
+      } catch (e) { return { k, ok: false, error: e.message }; }
+    }));
+
+    resultEl.innerHTML = `
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+        <div class="text-xs font-bold text-zinc-300 mb-2">Probe results — ${escapeHtml(host)}${escapeHtml(basePath)}</div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          ${results.map(r => `
+            <div class="bg-zinc-950/50 border ${r.ok ? 'border-emerald-800' : 'border-red-800'} rounded p-2">
+              <div class="text-xs font-mono ${r.ok ? 'text-emerald-400' : 'text-red-400'}">${r.ok ? '✓' : '✕'} ${r.k}</div>
+              <div class="text-[10px] text-zinc-500 truncate font-mono">${escapeHtml(r.path || r.error || r.message || '')}</div>
+              ${r.ok ? `<div class="text-[10px] text-zinc-400">${r.durationMs}ms</div>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    const listRes = results.find(r => r.k === 'list');
+    if (!listRes || !listRes.ok) {
+      status.innerHTML = '<span class="text-red-400">probe /list ไม่สำเร็จ — ตรวจ token, host, template</span>';
+      return;
+    }
+
+    const { items, itemsPath } = _ubExtractItemsWithPath(listRes.payload);
+    if (!items.length) {
+      status.innerHTML = '<span class="text-amber-400">/list ทำงานแต่ parser หา items ไม่เจอ — ดู raw payload + ใช้ฟอร์ม "+ เพิ่ม Source ใหม่" แล้วใส่ fieldMap manual</span>';
+      posterEl.innerHTML = `<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+        <div class="text-xs text-zinc-400 mb-1">Raw /list payload</div>
+        <pre class="text-[10px] text-zinc-300 whitespace-pre-wrap break-all max-h-72 overflow-auto">${escapeHtml(JSON.stringify(listRes.payload, null, 2).slice(0, 6000))}</pre>
+      </div>`;
+      return;
+    }
+
+    const fieldMap = _ubGuessFieldMap(items[0], itemsPath);
+    const localesRes = results.find(r => r.k === 'locales');
+    const localeList = localesRes && localesRes.ok ? _parseLocales(localesRes.payload) : [];
+
+    _ubState = {
+      key, label, adapter, adapterLabel, host, basePath, tokenEnv,
+      templates, fieldMap, items, localeList,
+    };
+
+    posterEl.innerHTML = `
+      <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+        <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <div class="text-xs font-bold text-zinc-300">📺 Poster preview (${items.length} เรื่องจาก /list)</div>
+          <div class="text-[10px] text-zinc-500 font-mono">
+            itemsPath=<span class="text-zinc-300">${escapeHtml(fieldMap.itemsPath || '(root)')}</span>,
+            id=<span class="text-zinc-300">${escapeHtml(fieldMap.idField)}</span>,
+            title=<span class="text-zinc-300">${escapeHtml(fieldMap.titleField)}</span>,
+            cover=<span class="text-zinc-300">${escapeHtml(fieldMap.coverField)}</span>
+          </div>
+        </div>
+        <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+          ${items.slice(0, 12).map((it, i) => {
+            const id = it[fieldMap.idField];
+            const title = it[fieldMap.titleField] || '(no title)';
+            const cover = it[fieldMap.coverField];
+            return `<button data-ub-item="${i}" class="text-center hover:opacity-80 transition">
+              ${cover ? `<img src="${escapeHtml(cover)}" alt="" class="w-full aspect-[2/3] object-cover rounded bg-zinc-800" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"/><div class="w-full aspect-[2/3] bg-zinc-800 rounded items-center justify-center text-zinc-600 text-xs hidden">load fail</div>` : '<div class="w-full aspect-[2/3] bg-zinc-800 rounded flex items-center justify-center text-zinc-600 text-xs">no cover</div>'}
+              <div class="text-[10px] text-zinc-300 mt-1 truncate text-left">${escapeHtml(String(title))}</div>
+              <div class="text-[9px] text-zinc-500 font-mono truncate text-left">${escapeHtml(String(id || ''))}</div>
+            </button>`;
+          }).join('')}
+        </div>
+        <p class="text-[10px] text-zinc-500 mt-2">💡 click poster เพื่อ probe /detail + /alleps ของเรื่องนั้น</p>
+      </div>
+    `;
+    posterEl.querySelectorAll('[data-ub-item]').forEach(btn => {
+      btn.onclick = () => _ubProbeDetail(parseInt(btn.dataset.ubItem));
+    });
+
+    status.innerHTML = `<span class="text-emerald-400">✓ พร้อมบันทึก — ${items.length} items, locale ${localeList.length} ภาษา${adapter !== adapterRaw ? `, ใช้ preset adapter "${adapter}"` : ''}</span>`;
+    $('#ubSave').disabled = false;
+  }
+
+  async function _ubProbeDetail(idx) {
+    if (!_ubState || !_ubState.items[idx]) return;
+    const s = _ubState;
+    const item = s.items[idx];
+    const id = item[s.fieldMap.idField];
+    const title = item[s.fieldMap.titleField] || '(no title)';
+    const detailEl = $('#ubDetail');
+    detailEl.innerHTML = `<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+      <div class="text-xs text-zinc-400">⏳ probing /detail + /alleps สำหรับ ${escapeHtml(String(id))}...</div>
+    </div>`;
+
+    const overrides = { host: s.host, basePath: s.basePath, tokenEnv: s.tokenEnv, adapter: s.adapter };
+    const probeKey = encodeURIComponent(s.key || 'new');
+    const calls = ['detail', 'alleps'].map(async k => {
+      const tpl = s.templates[k];
+      if (!tpl) return { k, ok: false, error: 'no template' };
+      try {
+        const r = await backendPost(`/api/admin/api-sources/${probeKey}/probe`, {
+          endpoint: k, template: tpl, vars: { series_id: String(id) }, overrides,
+        });
+        return { k, ...r };
+      } catch (e) { return { k, ok: false, error: e.message }; }
+    });
+    const [det, eps] = await Promise.all(calls);
+
+    detailEl.innerHTML = `<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-3 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="text-xs font-bold text-zinc-300">📖 ${escapeHtml(String(title))} — <span class="font-mono text-zinc-500">${escapeHtml(String(id))}</span></div>
+        <button id="ubDetailClose" class="text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <div class="text-[10px] font-mono ${det.ok ? 'text-emerald-400' : 'text-red-400'} mb-1">${det.ok ? '✓' : '✕'} /detail ${det.ok ? `(${det.durationMs}ms)` : (det.error || det.message || '')}</div>
+          <pre class="text-[10px] text-zinc-300 whitespace-pre-wrap break-all max-h-72 overflow-auto bg-zinc-950/50 p-2 rounded">${escapeHtml(JSON.stringify(det.payload || {}, null, 2).slice(0, 4000))}</pre>
+        </div>
+        <div>
+          <div class="text-[10px] font-mono ${eps.ok ? 'text-emerald-400' : 'text-red-400'} mb-1">${eps.ok ? '✓' : '✕'} /alleps ${eps.ok ? `(${eps.durationMs}ms)` : (eps.error || eps.message || '')}</div>
+          <pre class="text-[10px] text-zinc-300 whitespace-pre-wrap break-all max-h-72 overflow-auto bg-zinc-950/50 p-2 rounded">${escapeHtml(JSON.stringify(eps.payload || {}, null, 2).slice(0, 4000))}</pre>
+        </div>
+      </div>
+    </div>`;
+    $('#ubDetailClose').onclick = () => { detailEl.innerHTML = ''; };
+  }
+
+  async function _ubSave() {
+    if (!_ubState) return;
+    const s = _ubState;
+    const status = $('#ubStatus');
+    const body = {
+      key: s.key,
+      label: s.label || s.adapterLabel,
+      badgeClass: 'bg-zinc-700',
+      enabled: true,
+      host: s.host,
+      basePath: s.basePath,
+      tokenEnv: s.tokenEnv,
+      adapter: s.adapter,
+      endpoints: s.templates,
+      localeParam: '',
+      locales: { mode: 'all', allowed: [], discovered: s.localeList || [] },
+      fieldMap: s.fieldMap,
+    };
+    status.innerHTML = '<span class="text-zinc-400">⏳ saving...</span>';
+    try {
+      const r = await backendPost('/api/admin/api-sources', body);
+      _notifyApiSourcesChanged();
+      const tokenWarn = r && r.tokenAvailable === false ? ` <span class="text-amber-400">(env ${escapeHtml(s.tokenEnv)} ยังว่าง — ตั้งใน Render dashboard)</span>` : '';
+      status.innerHTML = `<span class="text-emerald-400">✓ บันทึกแล้ว — หน้าเว็บใช้ source "${escapeHtml(s.key)}" ได้ทันที</span>${tokenWarn}`;
+    } catch (e) {
+      status.innerHTML = `<span class="text-red-400">✕ ${escapeHtml(e.message)}</span>`;
+    }
+  }
+}
+
+function _ubExtractItemsWithPath(payload) {
+  const tryArr = v => Array.isArray(v) && v.length && typeof v[0] === 'object' ? v : null;
+  if (!payload) return { items: [], itemsPath: '' };
+  const direct = tryArr(payload);
+  if (direct) return { items: direct, itemsPath: '' };
+  if (typeof payload !== 'object') return { items: [], itemsPath: '' };
+  const candidates = ['data', 'items', 'list', 'records', 'result', 'books', 'series', 'rows'];
+  for (const k of candidates) {
+    const arr = tryArr(payload[k]);
+    if (arr) return { items: arr, itemsPath: k };
+  }
+  for (const k of candidates) {
+    const v = payload[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      for (const kk of candidates) {
+        const arr = tryArr(v[kk]);
+        if (arr) return { items: arr, itemsPath: `${k}.${kk}` };
+      }
+    }
+  }
+  for (const k of Object.keys(payload)) {
+    const v = payload[k];
+    const arr = tryArr(v);
+    if (arr) return { items: arr, itemsPath: k };
+  }
+  return { items: [], itemsPath: '' };
+}
+
+function _ubGuessFieldMap(sample, itemsPath) {
+  if (!sample || typeof sample !== 'object') return { itemsPath: itemsPath || '' };
+  const keys = Object.keys(sample);
+  const find = cands => cands.find(c => keys.includes(c)) || '';
+  return {
+    itemsPath: itemsPath || '',
+    idField:    find(['bookId', 'series_id', 'seriesId', 'id', 'book_id', 'dramaId', 'drama_id']),
+    titleField: find(['title', 'name', 'series_name', 'bookName', 'book_name', 'seriesTitle', 'dramaName']),
+    coverField: find(['cover', 'coverUrl', 'cover_url', 'image', 'imageUrl', 'image_url', 'poster', 'posterUrl', 'thumb', 'thumbnail', 'pic', 'picture']),
+    countField: find(['episode_count', 'episodeCount', 'totalEp', 'total_ep', 'epCount', 'chapter_count', 'chapterCount', 'chapterCnt']),
+  };
 }
