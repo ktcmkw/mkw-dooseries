@@ -45,6 +45,12 @@ function _appendLocaleParam(path, localeParam, locale) {
 function _isListLikePath(path) {
   return /[?&]page=/.test(path) || /\/(list|search|genres?)(\?|$)/.test(path);
 }
+// pageSizeFor(source, fallback) → ใช้ค่าที่ admin ตั้งใน apiSources[].pageSize ถ้ามี ไม่งั้น fallback
+// (บาง upstream API จำกัด page_size — เช่น FreeReels ไม่รับ 50, Admin ตั้ง 20 ผ่านฟอร์ม)
+function pageSizeFor(source, fallback) {
+  const ps = SOURCE_REG[source]?.pageSize;
+  return Number.isFinite(ps) && ps > 0 ? ps : fallback;
+}
 const PAGE_SIZE = 40;
 const BRAND = 'MKW Movies';
 
@@ -925,6 +931,7 @@ const publicConfig = {
           localeParam: s.localeParam || '',
           locales: s.locales || { mode: 'all', allowed: [] },
           fieldMap: (s.fieldMap && typeof s.fieldMap === 'object') ? s.fieldMap : {},
+          pageSize: Number.isFinite(s.pageSize) && s.pageSize > 0 ? s.pageSize : 0,
         };
       }
     }
@@ -1789,8 +1796,9 @@ async function initHomePage() {
   const filter = qs('filter') || 'all';
   const size = 50;
   // Per-source endpoint mapping — ใช้ template จาก SOURCE_REG (admin แก้ได้หลังบ้าน)
-  const listPath = (s, p) => pathFor(s, 'list', { page: p, page_size: size });
-  const searchPath = (s, kw, p) => pathFor(s, 'search', { keyword: kw, page: p, page_size: size });
+  // page_size ใช้ค่าที่ admin override ไว้ใน apiSources[].pageSize ถ้ามี (เช่น FreeReels ตั้ง 20)
+  const listPath = (s, p) => pathFor(s, 'list', { page: p, page_size: pageSizeFor(s, size) });
+  const searchPath = (s, kw, p) => pathFor(s, 'search', { keyword: kw, page: p, page_size: pageSizeFor(s, size) });
   const dThaiKeyword = 'พากย์';
   const dChineseKeyword = 'จีน';
   const dKoreanKeyword = 'เกาหลี';
@@ -1841,9 +1849,9 @@ async function initHomePage() {
         return { ...out, filter };
       } },
     { key: 'anime',  label: '🎌 การ์ตูน',
-      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 3744, page: p, page_size: size }) : null])) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 3744, page: p, page_size: pageSizeFor('dramabox', size) }) : null])) },
     { key: 'vip',    label: '💎 VIP',
-      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 1265, page: p, page_size: size }) : null])) },
+      spec: p => Object.fromEntries(API_SOURCES.map(s => [s, s === 'dramabox' ? pathFor('dramabox', 'genre', { genre_id: 1265, page: p, page_size: pageSizeFor('dramabox', size) }) : null])) },
   ];
   const active = filters.find(f => f.key === filter) || filters[0];
 
@@ -1876,13 +1884,13 @@ async function initHomePage() {
 }
 async function initVipPage() {
   await publicConfig.load();
-  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Billionaire', page: 1, page_size: PAGE_SIZE })]));
+  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Billionaire', page: 1, page_size: pageSizeFor(s, PAGE_SIZE) })]));
   return initBrowsePage({ active: 'vip', title: 'VIP / ท่านประธาน', subtitle: 'ซีรีส์แนว Billionaire / CEO',
     endpoint: spec });
 }
 async function initRecommendPage() {
   await publicConfig.load();
-  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Romance', page: 1, page_size: PAGE_SIZE })]));
+  const spec = Object.fromEntries(API_SOURCES.map(s => [s, pathFor(s, 'search', { keyword: 'Romance', page: 1, page_size: pageSizeFor(s, PAGE_SIZE) })]));
   return initBrowsePage({ active: 'recommend', title: 'แนะนำสำหรับคุณ', subtitle: 'ซีรีส์โรแมนซ์ยอดนิยม',
     endpoint: spec });
 }
@@ -1931,10 +1939,10 @@ async function doSearch(q) {
       const adapter = reg?.adapter || s;
       // Melolo /search ไม่รับ Thai → fallback /list + client filter (adapter-based ไม่ hardcode key)
       if (adapter === 'melolo') {
-        spec[s] = pathFor(s, 'list', { page: 1, page_size: PAGE_SIZE });
+        spec[s] = pathFor(s, 'list', { page: 1, page_size: pageSizeFor(s, PAGE_SIZE) });
         filter[s] = it => String(it.title || it.bookName || '').toLowerCase().includes(qLower);
       } else {
-        spec[s] = pathFor(s, 'search', { keyword: q, page: 1, page_size: PAGE_SIZE });
+        spec[s] = pathFor(s, 'search', { keyword: q, page: 1, page_size: pageSizeFor(s, PAGE_SIZE) });
       }
     }
     const res = await apiGetList({ ...spec, filter });
@@ -2047,7 +2055,7 @@ async function loadCategory(cat, allCats) {
   grid.innerHTML = skeletonGrid();
   msg.innerHTML = '';
   try {
-    const res = await apiGet(pathFor(source, 'genre', { genre_id: id, page: 1, page_size: PAGE_SIZE }), source);
+    const res = await apiGet(pathFor(source, 'genre', { genre_id: id, page: 1, page_size: pageSizeFor(source, PAGE_SIZE) }), source);
     const list = pickList(tagSource(res, source));
     const total = res?.total ? ` (ทั้งหมด ${res.total.toLocaleString()})` : '';
     msg.innerHTML = `<div class="text-sm text-zinc-500 mb-3"><span class="text-xs px-2 py-0.5 rounded ${SOURCE_BADGE_CLS[source]} text-white font-bold mr-2">${escapeHtml(SOURCE_LABELS[source] || source)}</span><strong class="text-zinc-200">${escapeHtml(cat.name || '')}</strong> • ${list.length} เรื่อง${total}</div>`;

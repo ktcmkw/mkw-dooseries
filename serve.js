@@ -58,6 +58,7 @@ function publicApiSource(s) {
       allowed: Array.isArray(s.locales?.allowed) ? s.locales.allowed.slice() : [],
     },
     fieldMap: (s.fieldMap && typeof s.fieldMap === 'object') ? { ...s.fieldMap } : {},
+    pageSize: Number.isFinite(s.pageSize) && s.pageSize > 0 ? s.pageSize : 0,
   };
 }
 
@@ -2209,6 +2210,9 @@ async function handleApi(req, res, pathname, query) {
     if (localeParam && !/^[a-zA-Z0-9_]+$/.test(localeParam)) return badRequest(res, 'localeParam: a-z 0-9 _ เท่านั้น');
     const locales = sanitizeLocales(body.locales);
     const fieldMap = sanitizeFieldMap(body.fieldMap);
+    let pageSize = parseInt(body.pageSize, 10);
+    if (!Number.isFinite(pageSize) || pageSize < 0) pageSize = 0;
+    if (pageSize > 200) pageSize = 200;
 
     data.apiSources = getApiSources(data);
     const idx = data.apiSources.findIndex(s => s.key === key);
@@ -2217,7 +2221,7 @@ async function handleApi(req, res, pathname, query) {
     if (existing?.locales?.discovered && !Array.isArray(body.locales?.discovered)) {
       locales.discovered = existing.locales.discovered;
     }
-    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter, endpoints, localeParam, locales, fieldMap };
+    const entry = { key, label, badgeClass, enabled, host, basePath, tokenEnv, adapter, endpoints, localeParam, locales, fieldMap, pageSize };
     if (idx >= 0) data.apiSources[idx] = entry; else data.apiSources.push(entry);
     await writeData(data);
     return json(res, 200, { ok: true, source: entry, tokenAvailable: !!resolveSourceToken(entry) });

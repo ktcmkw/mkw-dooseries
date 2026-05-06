@@ -2012,7 +2012,7 @@ function openApiSourceForm(source, c) {
   const defaultEps = { ..._ENDPOINT_PRESETS.dramabox };
   const cur = source || { key: '', label: '', badgeClass: 'bg-zinc-700', enabled: true,
     host: 'api.seriesjeen.online', basePath: '', tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'dramabox',
-    endpoints: defaultEps, localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] }, fieldMap: {} };
+    endpoints: defaultEps, localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] }, fieldMap: {}, pageSize: 0 };
   const curEps = cur.endpoints && typeof cur.endpoints === 'object' ? cur.endpoints : { ..._ENDPOINT_PRESETS[cur.adapter] || defaultEps };
   const curLocales = cur.locales || { mode: 'all', allowed: [], discovered: [] };
   const curFm = (cur.fieldMap && typeof cur.fieldMap === 'object') ? cur.fieldMap : {};
@@ -2081,6 +2081,13 @@ function openApiSourceForm(source, c) {
             <input name="tokenEnv" type="text" value="${escapeHtml(cur.tokenEnv)}" maxlength="100" pattern="[A-Z0-9_]*"
               placeholder="SERIESJEEN_TOKEN"
               class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+          </div>
+          <div>
+            <label class="text-xs text-zinc-400">page_size override <span class="text-zinc-600">(0 = ใช้ค่าเริ่มต้นของหน้าเว็บ 40-50)</span></label>
+            <input name="pageSize" type="number" min="0" max="200" value="${escapeHtml(String(cur.pageSize || 0))}"
+              placeholder="0"
+              class="w-full mt-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded font-mono"/>
+            <p class="text-[10px] text-zinc-500 mt-0.5">บาง upstream API จำกัด page_size — ใส่ค่าสูงสุดที่ API นี้รับได้ (เช่น 20). 0 = ไม่ override</p>
           </div>
         </fieldset>
 
@@ -2227,6 +2234,7 @@ function openApiSourceForm(source, c) {
       localeParam: form.localeParam.value.trim(),
       locales: { mode: form.localeMode.value, allowed, discovered: curLocales.discovered || [] },
       fieldMap: fm,
+      pageSize: parseInt(form.pageSize?.value || '0', 10) || 0,
     };
   };
 
