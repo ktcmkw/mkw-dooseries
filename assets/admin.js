@@ -2569,19 +2569,36 @@ async function renderUrlBuilderTab(c) {
     const localeList = localesRes && localesRes.ok ? _parseLocales(localesRes.payload) : [];
 
     // Auto-probe /detail ของ items[0] เพื่อ detect detailRoot / introField / epListPath / epIndexField / epUrlField / epIsChargeField
+    // ลอง 5 shape: preset → /detail/{id} → /detail?bookId={id} → /book/{id} → /drama/{id} → /series/{id}
+    // shape แรกที่ 200 ชนะ → override templates.detail ถ้าต่างจาก preset
     let detailAuto = null;
+    let detailShapeUsed = null;
+    let detailShapePreset = templates.detail || '';
     const firstId = items[0][fieldMap.idField];
-    if (firstId && templates.detail) {
-      try {
-        const r = await backendPost(`/api/admin/api-sources/${probeKey}/probe`, {
-          endpoint: 'detail', template: templates.detail,
-          vars: { series_id: String(firstId) }, overrides,
-        });
-        if (r.ok && r.payload) {
-          detailAuto = _ubGuessDetailFieldMap(r.payload);
-          Object.assign(fieldMap, detailAuto.guessed);
-        }
-      } catch {}
+    if (firstId) {
+      const candidates = [...new Set([
+        templates.detail,
+        '/detail/{series_id}',
+        '/detail?bookId={series_id}',
+        '/book/{series_id}',
+        '/drama/{series_id}',
+        '/series/{series_id}',
+      ].filter(Boolean))];
+      for (const tpl of candidates) {
+        try {
+          const r = await backendPost(`/api/admin/api-sources/${probeKey}/probe`, {
+            endpoint: 'detail', template: tpl,
+            vars: { series_id: String(firstId) }, overrides,
+          });
+          if (r.ok && r.payload) {
+            detailAuto = _ubGuessDetailFieldMap(r.payload);
+            detailShapeUsed = tpl;
+            if (tpl !== detailShapePreset) templates.detail = tpl;
+            Object.assign(fieldMap, detailAuto.guessed);
+            break;
+          }
+        } catch {}
+      }
     }
 
     _ubState = {
@@ -2603,6 +2620,7 @@ async function renderUrlBuilderTab(c) {
         ${detailAuto ? `
           <div class="bg-zinc-950/50 border border-emerald-900/50 rounded p-2 mb-2">
             <div class="text-[10px] font-bold text-emerald-400 mb-1">🤖 Auto-detected จาก /detail (เก็บเข้า fieldMap):</div>
+            ${detailShapeUsed && detailShapeUsed !== detailShapePreset ? `<div class="text-[10px] text-amber-300 font-mono mb-1">⚙ ใช้ shape <span class="text-amber-200">${escapeHtml(detailShapeUsed)}</span> (preset <span class="text-zinc-500 line-through">${escapeHtml(detailShapePreset || '(ว่าง)')}</span> ใช้ไม่ได้ → override)</div>` : (detailShapeUsed ? `<div class="text-[10px] text-zinc-500 font-mono mb-1">shape: <span class="text-zinc-300">${escapeHtml(detailShapeUsed)}</span></div>` : '')}
             <div class="text-[10px] text-zinc-400 font-mono leading-relaxed">
               ${detailAuto.guessed.detailRoot ? `detailRoot=<span class="text-emerald-300">${escapeHtml(detailAuto.guessed.detailRoot)}</span>, ` : ''}
               ${fieldMap.introField ? `intro=<span class="text-emerald-300">${escapeHtml(fieldMap.introField)}</span>, ` : ''}
