@@ -1783,7 +1783,15 @@ function renderGrid(container, list) {
 
 // Grouped-by-source sections (ใช้ตอน source='all' หรือ multi-source ทุกหน้าที่ผ่าน initBrowsePage)
 // header ค่าย + เส้นแบ่ง + grid 50 เรื่องของค่ายนั้นๆ
-function renderGroupedSections(buckets) {
+// items อยู่ใน merged list (top-level res.items) — _buckets มีแค่ metadata (count/total/err/skipped)
+// → group list by __source แล้วจับคู่กับ buckets metadata
+function renderGroupedSections(buckets, list) {
+  const itemsBySource = {};
+  for (const item of (list || [])) {
+    const s = item.__source;
+    if (!s) continue;
+    (itemsBySource[s] = itemsBySource[s] || []).push(item);
+  }
   const visible = (buckets || []).filter(b => !b.skipped);
   if (!visible.length) {
     return `<div class="text-center py-20 text-zinc-500"><div class="text-5xl mb-3">🎭</div><p>ไม่มีรายการ</p></div>`;
@@ -1795,7 +1803,7 @@ function renderGroupedSections(buckets) {
     if (b.err) {
       return `<section class="mb-8"><div class="flex items-center gap-3 mb-3 flex-wrap">${headerLeft}<span class="text-xs text-red-400">⚠ ไม่ตอบ: ${escapeHtml(b.err)}</span><div class="flex-1 h-px bg-gradient-to-r from-red-500/40 to-transparent"></div></div></section>`;
     }
-    const items = b.items || [];
+    const items = itemsBySource[b.source] || [];
     if (!items.length) {
       return `<section class="mb-8"><div class="flex items-center gap-3 mb-3 flex-wrap">${headerLeft}<span class="text-xs text-zinc-500">ไม่มีรายการ</span><div class="flex-1 h-px bg-gradient-to-r from-zinc-700/60 to-transparent"></div></div></section>`;
     }
@@ -1904,7 +1912,7 @@ async function initBrowsePage(opts) {
     if (isMulti) {
       // Grouped view per source — header + เส้นแบ่ง + grid per ค่าย
       grid.className = '';
-      grid.innerHTML = renderGroupedSections(res._buckets);
+      grid.innerHTML = renderGroupedSections(res._buckets, list);
     } else {
       renderGrid(grid, list);
     }
