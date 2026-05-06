@@ -265,6 +265,29 @@ const DEFAULT_DATA = {
         video:       '/api/platform/freereels/drama/{series_id}/play/{episode}',
       },
       localeParam: '', locales: { mode: 'all', allowed: [], discovered: [] }, fieldMap: {} },
+    { key: 'reelife',   label: 'ReelLife',  badgeClass: 'bg-teal-600',    enabled: true,
+      host: 'api.seriesjeen.online', basePath: '/api/platform/reelife',   tokenEnv: 'SERIESJEEN_TOKEN', adapter: 'reelife',
+      endpoints: {
+        list:        '/list?page={page}&page_size={page_size}',
+        search:      '/search?keyword={keyword}&page={page}&page_size={page_size}',
+        detail:      '/book/{series_id}',
+        alleps:      '/allepisode?bookId={series_id}',
+        genres:      '/genres',
+        genre:       '/genre/{genre_id}?page={page}&page_size={page_size}',
+        genreSearch: '/genre/{genre_id}/search?keyword={keyword}&page={page}&page_size={page_size}',
+        locales:     '/locales',
+        video:       '',
+      },
+      localeParam: '',
+      locales: { mode: 'all', allowed: [], discovered: [
+        { id: 'en', name: 'en' }, { id: 'in', name: 'in' }, { id: 'jp', name: 'jp' },
+        { id: 'ko', name: 'ko' }, { id: 'kr', name: 'kr' }, { id: 'th', name: 'th' }, { id: 'vn', name: 'vn' },
+      ] },
+      fieldMap: {
+        itemsPath: 'items', idField: 'series_id', titleField: 'title', coverField: 'cover', countField: 'episode_count',
+        detailRoot: 'data.bookVo', introField: 'introduction',
+        epListPath: 'data.chapterContentList', epIndexField: 'chapterId', epUrlField: 'mp4720p', epIsChargeField: 'isCharge',
+      } },
   ],
 };
 
@@ -2337,6 +2360,41 @@ async function handleApi(req, res, pathname, query) {
     } catch (e) {
       return json(res, 200, { ok: false, error: 'fetch_failed', message: e.message, path: subPath });
     }
+  }
+
+  // ===== Admin: Export / Import data backup =====
+  // GET = ดาวน์โหลด data ทั้งก้อนเป็น JSON (ใช้ก่อน deploy เพื่อ backup user/coins/VIP/ฯลฯ)
+  if (pathname === '/api/admin/export' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    audit(data, user, 'export', null);
+    await writeData(data);
+    const filename = `mkw-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(data, null, 2));
+    return;
+  }
+  // POST = อัปโหลด JSON มาทับ data ทั้งก้อน (ใช้หลัง deploy → restore)
+  // ⚠ overwrite ทั้งหมด รวม sessions → admin จะถูก kick (ต้อง login ใหม่)
+  if (pathname === '/api/admin/import' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    if (!body || typeof body !== 'object' || !body.users || typeof body.users !== 'object') {
+      return badRequest(res, 'ไฟล์ไม่ถูกต้อง — ต้องมี field "users"');
+    }
+    const merged = applyDefaults(body);
+    Object.keys(data).forEach(k => delete data[k]);
+    Object.assign(data, merged);
+    audit(data, user, 'import', { users: Object.keys(merged.users || {}).length });
+    await writeData(data);
+    return json(res, 200, {
+      ok: true,
+      keys: Object.keys(data).length,
+      users: Object.keys(data.users || {}).length,
+    });
   }
 
   return notFound(res, 'API endpoint ไม่พบ: ' + req.method + ' ' + pathname);

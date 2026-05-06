@@ -956,6 +956,29 @@ async function renderSiteTab(c) {
         </span>
       </div>
     </div>
+
+    <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-5">
+      <div class="flex items-start gap-3 mb-3">
+        <div class="text-2xl">💾</div>
+        <div class="flex-1">
+          <h3 class="font-bold">Export / Import ข้อมูล (Backup)</h3>
+          <p class="text-xs text-zinc-500 mt-0.5">
+            ใช้ก่อน deploy ใหม่: <strong class="text-emerald-300">Export</strong> ดาวน์โหลด data.json เก็บไว้ → deploy → <strong class="text-amber-300">Import</strong> เอากลับเข้าไป
+          </p>
+          <p class="text-[11px] text-zinc-600 mt-1">
+            ⚠ ไฟล์ backup มี password hash + tokens — เก็บที่ปลอดภัย ห้ามแชร์ • Import จะ overwrite ทั้งหมด + คุณจะถูก logout
+          </p>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button id="dataExport" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-bold">⬇ Export ข้อมูล</button>
+        <label class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded text-sm font-bold cursor-pointer">
+          ⬆ Import ข้อมูล
+          <input id="dataImport" type="file" accept=".json,application/json" class="hidden"/>
+        </label>
+      </div>
+      <div id="dataIoStatus" class="text-sm mt-2 hidden"></div>
+    </div>
   `;
 
   $('#anSave').onclick = async () => {
@@ -996,6 +1019,62 @@ async function renderSiteTab(c) {
     } catch (ex) {
       alert('ไม่สำเร็จ: ' + ex.message);
       e.target.checked = !disableTracking;
+    }
+  };
+
+  $('#dataExport').onclick = async () => {
+    const st = $('#dataIoStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400', 'text-amber-400');
+    st.classList.add('text-amber-400');
+    st.textContent = '⏳ กำลังเตรียมไฟล์...';
+    try {
+      const tok = localStorage.getItem('mkw_token') || '';
+      const r = await fetch('/api/admin/export', { headers: { Authorization: 'Bearer ' + tok } });
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); msg = j.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `mkw-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      st.classList.remove('text-amber-400'); st.classList.add('text-emerald-400');
+      st.textContent = `✓ ดาวน์โหลดสำเร็จ (${(blob.size / 1024).toFixed(1)} KB) — เก็บไฟล์ไว้ในที่ปลอดภัย`;
+    } catch (e) {
+      st.classList.remove('text-amber-400'); st.classList.add('text-red-400');
+      st.textContent = '✗ ' + e.message;
+    }
+  };
+
+  $('#dataImport').onchange = async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!confirm(`⚠ ยืนยัน Import จาก "${file.name}"?\n\nข้อมูลปัจจุบันทั้งหมดจะถูก OVERWRITE ทั้งก้อน — รวม users / coins / VIP / giftcards / sessions\n\nหลัง import คุณจะถูก logout (ต้อง login ใหม่)`)) {
+      e.target.value = '';
+      return;
+    }
+    const st = $('#dataIoStatus');
+    st.classList.remove('hidden', 'text-emerald-400', 'text-red-400', 'text-amber-400');
+    st.classList.add('text-amber-400');
+    st.textContent = '⏳ กำลัง upload + apply...';
+    try {
+      const text = await file.text();
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { throw new Error('ไฟล์ไม่ใช่ JSON ที่ถูกต้อง'); }
+      const r = await backendPost('/api/admin/import', parsed);
+      st.classList.remove('text-amber-400'); st.classList.add('text-emerald-400');
+      st.textContent = `✓ Import สำเร็จ — ${r.users} users, ${r.keys} keys → กำลัง logout ใน 2 วินาที...`;
+      setTimeout(() => {
+        localStorage.removeItem('mkw_token');
+        location.href = '/login';
+      }, 2000);
+    } catch (ex) {
+      st.classList.remove('text-amber-400'); st.classList.add('text-red-400');
+      st.textContent = '✗ ' + ex.message;
+      e.target.value = '';
     }
   };
 }
