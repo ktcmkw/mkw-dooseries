@@ -1781,6 +1781,42 @@ function renderGrid(container, list) {
   container.innerHTML = list.map(dramaCard).join('');
 }
 
+// Grouped-by-source sections (ใช้ตอน source='all' หรือ multi-source ทุกหน้าที่ผ่าน initBrowsePage)
+// header ค่าย + เส้นแบ่ง + grid 50 เรื่องของค่ายนั้นๆ
+function renderGroupedSections(buckets) {
+  const visible = (buckets || []).filter(b => !b.skipped);
+  if (!visible.length) {
+    return `<div class="text-center py-20 text-zinc-500"><div class="text-5xl mb-3">🎭</div><p>ไม่มีรายการ</p></div>`;
+  }
+  return visible.map(b => {
+    const label = SOURCE_LABELS[b.source] || b.source;
+    const badgeCls = SOURCE_BADGE_CLS[b.source] || 'bg-zinc-700';
+    const headerLeft = `<span class="px-3 py-1 ${badgeCls} text-white rounded-lg text-sm font-black shadow-md">${escapeHtml(label)}</span>`;
+    if (b.err) {
+      return `<section class="mb-8"><div class="flex items-center gap-3 mb-3 flex-wrap">${headerLeft}<span class="text-xs text-red-400">⚠ ไม่ตอบ: ${escapeHtml(b.err)}</span><div class="flex-1 h-px bg-gradient-to-r from-red-500/40 to-transparent"></div></div></section>`;
+    }
+    const items = b.items || [];
+    if (!items.length) {
+      return `<section class="mb-8"><div class="flex items-center gap-3 mb-3 flex-wrap">${headerLeft}<span class="text-xs text-zinc-500">ไม่มีรายการ</span><div class="flex-1 h-px bg-gradient-to-r from-zinc-700/60 to-transparent"></div></div></section>`;
+    }
+    const totalNote = (b.total && b.total > items.length)
+      ? ` <span class="text-zinc-600">(จากทั้งหมด ${b.total.toLocaleString()})</span>`
+      : '';
+    return `
+      <section class="mb-10">
+        <div class="flex items-center gap-3 mb-4 flex-wrap">
+          ${headerLeft}
+          <span class="text-zinc-500 text-sm">แสดง <strong class="text-zinc-300">${items.length}</strong> เรื่อง${totalNote}</span>
+          <div class="flex-1 h-px bg-gradient-to-r from-zinc-600 via-zinc-800 to-transparent"></div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+          ${items.map(dramaCard).join('')}
+        </div>
+      </section>
+    `;
+  }).join('');
+}
+
 // Pagination "1 2 3 ... last" smart truncation
 function renderPagination(current, totalPages, basePath, sep) {
   if (totalPages <= 1) return '';
@@ -1864,7 +1900,14 @@ async function initBrowsePage(opts) {
     const res = await apiGetList(opts.endpoint);
     const list = pickList(res);
     await ingestAndMarkNew(res);
-    renderGrid(grid, list);
+    const isMulti = res?._multi && Array.isArray(res._buckets) && res._buckets.length > 0;
+    if (isMulti) {
+      // Grouped view per source — header + เส้นแบ่ง + grid per ค่าย
+      grid.className = '';
+      grid.innerHTML = renderGroupedSections(res._buckets);
+    } else {
+      renderGrid(grid, list);
+    }
     const total = res?.total ? ` จากทั้งหมด ${res.total.toLocaleString()}` : '';
     let bucketsNote = '';
     if (res?._multi && res._buckets) {
