@@ -232,6 +232,18 @@ const DEFAULT_DATA = {
   registerIpLog: {},                                          // ip → { count, firstAt }
   bannedIps: {},                                              // ip → { until, reason }
   pointsConfig: { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 },  // 100 point = 1 coin
+  badges: [
+    { id: 'b_starter',  name: 'มือใหม่',      icon: '🌱', requirement: { type: 'minutes', value: 30 },   reward: 'เริ่มสะสมเหรียญตรา ดูได้ทุกค่าย',   color: 'emerald' },
+    { id: 'b_watcher',  name: 'นักดูซีรีส์',  icon: '🎬', requirement: { type: 'minutes', value: 300 },  reward: 'รับ +50 MKW เป็นรางวัล',                color: 'blue' },
+    { id: 'b_marathon', name: 'นักมาราธอน',   icon: '🏆', requirement: { type: 'minutes', value: 1440 }, reward: 'รับ VIP 1 วันฟรี',                       color: 'amber' },
+    { id: 'b_legend',   name: 'ตำนานนักดู',   icon: '💎', requirement: { type: 'minutes', value: 6000 }, reward: 'รับ VIP 7 วันฟรี + ปลดล็อกระดับตำนาน', color: 'purple' },
+  ],
+  topupMilestones: [
+    { id: 'm_100',  threshold: 100,   bonusCoins: 50,   bonusVipDays: 0,   label: 'เติมครบ 100 ครั้งแรก',      description: 'รับโบนัส 50 MKW' },
+    { id: 'm_500',  threshold: 500,   bonusCoins: 300,  bonusVipDays: 3,   label: 'เติมสะสมครบ 500',          description: 'รับ +300 MKW + VIP 3 วัน' },
+    { id: 'm_1000', threshold: 1000,  bonusCoins: 1000, bonusVipDays: 7,   label: 'เติมสะสมครบ 1,000',        description: 'รับ +1,000 MKW + VIP 7 วัน' },
+    { id: 'm_5000', threshold: 5000,  bonusCoins: 0,    bonusVipDays: 30,  label: 'เติมสะสมครบ 5,000',        description: 'รับ VIP 30 วันฟรี!' },
+  ],
   sessionClosures: {},                                        // token → { reason, at } (TTL 24h) เก็บไว้แจ้งฝั่ง client ที่ถูกเตะ
   seenBooks: {},                                              // source → bookId → { firstSeenAt, bookName, cover } (NEW badge tracking)
   lastPollAt: {},                                             // source → ISO timestamp ของ midnight poll ครั้งล่าสุด
@@ -545,6 +557,14 @@ function publicUser(u, data) {
   const today = getBangkokDate();
   const pd = u.pointsDaily || { date: '', earned: 0 };
   const pc = data ? getPointsConfig(data) : { pointsPerMinute: 10, dailyCap: 10000, redeemRate: 100 };
+  const allBadges = data ? getBadges(data) : [];
+  const userBadges = Array.isArray(u.userBadges) ? u.userBadges : [];
+  const badgeMap = new Map(allBadges.map(b => [b.id, b]));
+  const earnedBadges = userBadges.map(ub => {
+    const meta = badgeMap.get(ub.id);
+    return meta ? Object.assign({}, meta, { earnedAt: ub.earnedAt }) : { id: ub.id, name: ub.id, icon: '🏅', earnedAt: ub.earnedAt };
+  });
+  const totalMinutes = userTotalMinutes(u, data || { pointsConfig: pc });
   return {
     username: u.username,
     role: u.role,
@@ -557,6 +577,12 @@ function publicUser(u, data) {
     pointsDailyCap: pc.dailyCap,
     pointsPerMinute: pc.pointsPerMinute,
     pointsRedeemRate: pc.redeemRate,
+    totalWatchMinutes: totalMinutes,
+    totalTopupCoins: u.totalTopupCoins || 0,
+    googleEmail: u.googleEmail || null,
+    googleName: u.googleName || null,
+    badges: earnedBadges,
+    claimedMilestones: Array.isArray(u.claimedMilestones) ? u.claimedMilestones.slice() : [],
   };
 }
 
@@ -572,6 +598,81 @@ function getPointsConfig(data) {
 function getBangkokDate() {
   const d = new Date(Date.now() + 7 * 3600 * 1000);
   return d.toISOString().slice(0, 10);
+}
+
+// ---------- Badges + Topup Milestones ----------
+function getBadges(data) {
+  return Array.isArray(data.badges) ? data.badges : [];
+}
+function getMilestones(data) {
+  return Array.isArray(data.topupMilestones) ? data.topupMilestones : [];
+}
+function userTotalMinutes(u, data) {
+  const pc = data ? getPointsConfig(data) : { pointsPerMinute: 10 };
+  const lifetimePoints = (u.lifetimePoints != null) ? u.lifetimePoints : (u.points || 0);
+  return Math.floor(lifetimePoints / Math.max(1, pc.pointsPerMinute));
+}
+function checkAndAwardBadges(u, data) {
+  const badges = getBadges(data);
+  if (!badges.length) return [];
+  u.userBadges = Array.isArray(u.userBadges) ? u.userBadges : [];
+  const owned = new Set(u.userBadges.map(b => b.id));
+  const minutes = userTotalMinutes(u, data);
+  const newly = [];
+  for (const b of badges) {
+    if (owned.has(b.id)) continue;
+    const req = b.requirement || {};
+    if (req.type === 'minutes' && minutes >= (Number(req.value) || 0)) {
+      u.userBadges.push({ id: b.id, earnedAt: new Date().toISOString() });
+      newly.push(b);
+    }
+  }
+  if (newly.length && u.username) {
+    const NL = String.fromCharCode(10);
+    for (const b of newly) {
+      sendInbox(data, u.username, {
+        from: 'system',
+        subject: '🏅 ปลดล็อกเหรียญตรา ' + (b.name || b.id),
+        body: 'ยินดีด้วย! คุณได้รับเหรียญตรา "' + (b.name || b.id) + '"' + NL + 'รางวัล: ' + (b.reward || '-') + NL + NL + 'ดูเหรียญตราทั้งหมดได้ที่หน้าโปรไฟล์',
+      });
+    }
+  }
+  return newly;
+}
+function checkAndAwardMilestones(u, data) {
+  const list = getMilestones(data).slice().sort((a, b) => (a.threshold || 0) - (b.threshold || 0));
+  if (!list.length) return [];
+  u.claimedMilestones = Array.isArray(u.claimedMilestones) ? u.claimedMilestones : [];
+  const claimed = new Set(u.claimedMilestones);
+  const total = u.totalTopupCoins || 0;
+  const newly = [];
+  for (const m of list) {
+    if (claimed.has(m.id)) continue;
+    if (total < (Number(m.threshold) || 0)) continue;
+    const bonusCoins = Math.max(0, parseInt(m.bonusCoins, 10) || 0);
+    const bonusVipDays = Math.max(0, parseInt(m.bonusVipDays, 10) || 0);
+    if (bonusCoins > 0) u.coins = (u.coins || 0) + bonusCoins;
+    if (bonusVipDays > 0) {
+      const now = Date.now();
+      const base = (u.role === 'vip' && u.vipExpires && u.vipExpires > now) ? u.vipExpires : now;
+      u.vipExpires = base + bonusVipDays * 24 * 60 * 60 * 1000;
+      if (u.role !== 'admin' && u.role !== 'vip') u.role = 'vip';
+    }
+    u.claimedMilestones.push(m.id);
+    newly.push(m);
+    if (u.username) {
+      const NL = String.fromCharCode(10);
+      const parts = [];
+      if (bonusCoins > 0) parts.push('+' + bonusCoins.toLocaleString() + ' MKW');
+      if (bonusVipDays > 0) parts.push('+VIP ' + bonusVipDays + ' วัน');
+      sendInbox(data, u.username, {
+        from: 'system',
+        subject: '🎯 รางวัลสะสมเติมเงิน: ' + (m.label || m.id),
+        body: 'เติมเงินสะสมครบ ' + (m.threshold||0).toLocaleString() + ' MKW แล้ว!' + NL + 'รางวัล: ' + (parts.join(' + ') || (m.description || '-')) + NL + NL + 'ขอบคุณที่สนับสนุนเรา',
+      });
+    }
+  }
+  return newly;
 }
 
 // ---------- IP ban / register throttle ----------
@@ -1123,12 +1224,23 @@ async function handleApi(req, res, pathname, query) {
     const want = minutes * pc.pointsPerMinute;
     const room = Math.max(0, pc.dailyCap - u.pointsDaily.earned);
     const give = Math.min(room, want);
+    let earnedBadges = [];
     if (give > 0) {
       u.points += give;
+      u.lifetimePoints = (u.lifetimePoints || 0) + give;
       u.pointsDaily.earned += give;
+      u.username = user.username;
+      earnedBadges = checkAndAwardBadges(u, data);
       await writeData(data);
     }
-    return json(res, 200, { points: u.points, pointsToday: u.pointsDaily.earned, cap: pc.dailyCap, added: give });
+    return json(res, 200, {
+      points: u.points,
+      pointsToday: u.pointsDaily.earned,
+      cap: pc.dailyCap,
+      added: give,
+      totalWatchMinutes: userTotalMinutes(u, data),
+      newBadges: earnedBadges.map(b => ({ id: b.id, name: b.name, icon: b.icon, reward: b.reward })),
+    });
   }
 
   if (req.method === 'POST' && pathname === '/api/user/redeem-points') {
@@ -1197,12 +1309,19 @@ async function handleApi(req, res, pathname, query) {
     }
     const u = data.users[user.username];
     u.coins = (u.coins || 0) + pkg.coins;
+    u.totalTopupCoins = (u.totalTopupCoins || 0) + pkg.coins;
+    u.username = user.username;
     data.topupHistory = data.topupHistory || [];
     data.topupHistory.push({
       username: user.username, packageId, coins: pkg.coins, pricePaid: finalPrice, discount: discountApplied, at: new Date().toISOString(),
     });
+    const earnedMilestones = checkAndAwardMilestones(u, data);
     await writeData(data);
-    return json(res, 200, { ok: true, coinsAdded: pkg.coins, pricePaid: finalPrice, newBalance: u.coins });
+    return json(res, 200, {
+      ok: true, coinsAdded: pkg.coins, pricePaid: finalPrice, newBalance: u.coins,
+      totalTopupCoins: u.totalTopupCoins,
+      newMilestones: earnedMilestones.map(m => ({ id: m.id, label: m.label, bonusCoins: m.bonusCoins, bonusVipDays: m.bonusVipDays })),
+    });
   }
 
   if (req.method === 'POST' && pathname === '/api/giftcard/redeem') {
@@ -1472,6 +1591,131 @@ async function handleApi(req, res, pathname, query) {
     const target = decodeURIComponent(mUserInbox[1]);
     if (!data.users[target]) return notFound(res, 'ไม่พบ user');
     return json(res, 200, { messages: data.users[target].inbox || [] });
+  }
+
+  // ===== Admin: ปรับ Online Points =====
+  const D36 = String.fromCharCode(36);
+  const mPointsAdj = pathname.match(new RegExp('^/api/admin/user/([^/]+)/points' + D36));
+  if (mPointsAdj && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const delta = parseInt(body.delta || 0, 10);
+    if (!Number.isFinite(delta) || delta === 0) return badRequest(res, 'delta must be non-zero number');
+    const target = decodeURIComponent(mPointsAdj[1]);
+    const u = data.users[target];
+    if (!u) return notFound(res, 'user not found');
+    u.points = Math.max(0, (u.points || 0) + delta);
+    if (delta > 0) {
+      u.lifetimePoints = (u.lifetimePoints || 0) + delta;
+      u.username = target;
+      checkAndAwardBadges(u, data);
+    }
+    audit(data, user, 'points-adjust', { target, delta, newPoints: u.points });
+    await writeData(data);
+    return json(res, 200, { ok: true, points: u.points, lifetimePoints: u.lifetimePoints || 0 });
+  }
+
+  const mTopupAdj = pathname.match(new RegExp('^/api/admin/user/([^/]+)/total-topup' + D36));
+  if (mTopupAdj && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const value = parseInt(body.value, 10);
+    if (!Number.isFinite(value) || value < 0) return badRequest(res, 'value must be >= 0');
+    const target = decodeURIComponent(mTopupAdj[1]);
+    const u = data.users[target];
+    if (!u) return notFound(res, 'user not found');
+    u.totalTopupCoins = value;
+    u.username = target;
+    checkAndAwardMilestones(u, data);
+    audit(data, user, 'total-topup-set', { target, value });
+    await writeData(data);
+    return json(res, 200, { ok: true, totalTopupCoins: u.totalTopupCoins, claimedMilestones: u.claimedMilestones || [] });
+  }
+
+  if (pathname === '/api/admin/badges' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { badges: getBadges(data) });
+  }
+  if (pathname === '/api/admin/badges' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const list = Array.isArray(body.badges) ? body.badges : null;
+    if (!list) return badRequest(res, 'badges must be array');
+    const cleaned = [];
+    const idRe = new RegExp('^[a-z0-9_-]{2,50}' + D36, 'i');
+    for (const b of list) {
+      const id = String(b.id || '').trim().slice(0, 50);
+      if (!idRe.test(id)) return badRequest(res, 'badge id invalid: ' + id);
+      const name = String(b.name || '').slice(0, 80) || id;
+      const icon = String(b.icon || '🏅').slice(0, 8);
+      const reward = String(b.reward || '').slice(0, 300);
+      const color = ['emerald', 'blue', 'amber', 'purple', 'red', 'pink', 'teal', 'rose', 'orange', 'zinc'].includes(b.color) ? b.color : 'zinc';
+      const reqType = String((b.requirement && b.requirement.type) || 'minutes');
+      const reqValue = Math.max(0, parseInt(b.requirement && b.requirement.value, 10) || 0);
+      cleaned.push({ id, name, icon, reward, color, requirement: { type: reqType, value: reqValue } });
+    }
+    const ids = cleaned.map(b => b.id);
+    if (new Set(ids).size !== ids.length) return badRequest(res, 'duplicate badge id');
+    data.badges = cleaned;
+    audit(data, user, 'badges-save', { count: cleaned.length });
+    await writeData(data);
+    return json(res, 200, { ok: true, badges: data.badges });
+  }
+  const mBadgeDel = pathname.match(new RegExp('^/api/admin/badges/([^/]+)' + D36));
+  if (mBadgeDel && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const id = decodeURIComponent(mBadgeDel[1]);
+    const before = (data.badges || []).length;
+    data.badges = (data.badges || []).filter(b => b.id !== id);
+    if (data.badges.length === before) return notFound(res);
+    audit(data, user, 'badge-delete', { id });
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/admin/topup-milestones' && req.method === 'GET') {
+    if (!requireAdmin()) return;
+    return json(res, 200, { milestones: getMilestones(data) });
+  }
+  if (pathname === '/api/admin/topup-milestones' && req.method === 'POST') {
+    if (!requireAdmin()) return;
+    const body = await readBody(req);
+    const list = Array.isArray(body.milestones) ? body.milestones : null;
+    if (!list) return badRequest(res, 'milestones must be array');
+    const cleaned = [];
+    const idRe2 = new RegExp('^[a-z0-9_-]{2,50}' + D36, 'i');
+    for (const m of list) {
+      const id = String(m.id || '').trim().slice(0, 50);
+      if (!idRe2.test(id)) return badRequest(res, 'milestone id invalid: ' + id);
+      const threshold = Math.max(1, parseInt(m.threshold, 10) || 0);
+      const bonusCoins = Math.max(0, parseInt(m.bonusCoins, 10) || 0);
+      const bonusVipDays = Math.max(0, parseInt(m.bonusVipDays, 10) || 0);
+      const label = String(m.label || '').slice(0, 100) || id;
+      const description = String(m.description || '').slice(0, 200);
+      if (bonusCoins === 0 && bonusVipDays === 0) return badRequest(res, 'milestone ' + id + ' needs bonus coins or vip days');
+      cleaned.push({ id, threshold, bonusCoins, bonusVipDays, label, description });
+    }
+    const ids = cleaned.map(m => m.id);
+    if (new Set(ids).size !== ids.length) return badRequest(res, 'duplicate milestone id');
+    data.topupMilestones = cleaned.sort((a, b) => a.threshold - b.threshold);
+    audit(data, user, 'milestones-save', { count: cleaned.length });
+    await writeData(data);
+    return json(res, 200, { ok: true, milestones: data.topupMilestones });
+  }
+  const mMilesDel = pathname.match(new RegExp('^/api/admin/topup-milestones/([^/]+)' + D36));
+  if (mMilesDel && req.method === 'DELETE') {
+    if (!requireAdmin()) return;
+    const id = decodeURIComponent(mMilesDel[1]);
+    const before = (data.topupMilestones || []).length;
+    data.topupMilestones = (data.topupMilestones || []).filter(m => m.id !== id);
+    if (data.topupMilestones.length === before) return notFound(res);
+    audit(data, user, 'milestone-delete', { id });
+    await writeData(data);
+    return json(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/public/badges' && req.method === 'GET') {
+    return json(res, 200, { badges: getBadges(data), milestones: getMilestones(data) });
   }
 
   // ===== Hidden books (ซ่อนทั้งเรื่อง) =====
@@ -1871,12 +2115,15 @@ async function handleApi(req, res, pathname, query) {
     const u = data.users[slip.username];
     if (!u) return notFound(res, 'ไม่พบ user');
     u.coins = (u.coins || 0) + slip.amount;
+    u.totalTopupCoins = (u.totalTopupCoins || 0) + slip.amount;
+    u.username = slip.username;
     slip.status = 'approved';
     slip.approvedBy = user.username;
     slip.approvedAt = new Date().toISOString();
     slip.image = '';  // เคลียร์ภาพหลัง approve — เก็บ metadata ไว้ดู audit
     data.topupHistory = data.topupHistory || [];
     data.topupHistory.push({ username: slip.username, packageId: 'slip:' + slip.id, coins: slip.amount, pricePaid: slip.amount, discount: null, at: slip.approvedAt });
+    checkAndAwardMilestones(u, data);
     sendInbox(data, slip.username, {
       from: 'admin',
       subject: `✅ สลิปได้รับการอนุมัติ +${slip.amount} MKW`,

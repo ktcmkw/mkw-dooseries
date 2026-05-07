@@ -3754,69 +3754,155 @@ async function initProfilePage() {
   await auth.refresh();
   if (!auth.user) { location.href = '/login?next=/profile'; return; }
   const u = auth.user;
+
+  let allBadges = [];
+  let allMilestones = [];
+  try {
+    const def = await backendGet('/api/public/badges');
+    allBadges = Array.isArray(def.badges) ? def.badges : [];
+    allMilestones = Array.isArray(def.milestones) ? def.milestones : [];
+  } catch {}
+
+  const earnedSet = new Set((u.badges || []).map(b => b.id));
+  const claimedSet = new Set(u.claimedMilestones || []);
+  const totalMin = u.totalWatchMinutes || 0;
+  const totalTopup = u.totalTopupCoins || 0;
+
+  const colorMap = {
+    emerald: 'from-emerald-500 to-emerald-700',
+    blue:    'from-blue-500 to-blue-700',
+    amber:   'from-amber-400 to-amber-600',
+    purple:  'from-purple-500 to-purple-700',
+    red:     'from-red-500 to-red-700',
+    pink:    'from-pink-500 to-pink-700',
+    teal:    'from-teal-500 to-teal-700',
+    rose:    'from-rose-500 to-rose-700',
+    orange:  'from-orange-500 to-orange-700',
+    zinc:    'from-zinc-500 to-zinc-700',
+  };
+
   const vipText = (u.role === 'vip' && u.vipExpires)
-    ? `VIP หมดอายุ ${new Date(u.vipExpires).toLocaleString('th-TH')}`
+    ? 'VIP หมดอายุ ' + new Date(u.vipExpires).toLocaleDateString('th-TH', { day: '2-digit', month: 'short', year: 'numeric' })
     : (u.role === 'admin' ? 'Admin (ดูได้ทุกอย่างฟรี)' : 'สมาชิกทั่วไป');
 
-  await mountPage('', `
-    <div class="max-w-2xl mx-auto">
-      <h2 class="text-2xl sm:text-3xl font-black mb-1">โปรไฟล์</h2>
-      <p class="text-sm text-zinc-500 mb-6">ข้อมูลบัญชีของ ${escapeHtml(u.username)}</p>
+  const fmtMin = (m) => {
+    if (m < 60) return m + ' นาที';
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return h + ' ชม.' + (mm ? ' ' + mm + ' นาที' : '');
+  };
 
-      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-5">
-        <div class="flex items-center gap-4 mb-4">
-          <div class="w-16 h-16 rounded-full bg-gradient-to-br from-red-500 to-rose-700 flex items-center justify-center font-black text-2xl text-white">${escapeHtml((u.username[0] || '?').toUpperCase())}</div>
-          <div>
-            <div class="text-xl font-black">${escapeHtml(u.username)}</div>
-            <div class="mt-1 flex items-center gap-2 flex-wrap">${roleBadge(u.role)} <span class="text-xs text-zinc-400">${escapeHtml(vipText)}</span></div>
-          </div>
-        </div>
-        <div class="grid grid-cols-2 gap-3 text-sm">
-          <div class="bg-amber-500/10 border border-amber-500/30 rounded p-3">
-            <div class="text-xs text-zinc-400">เหรียญ MKW</div>
-            <div class="font-black text-amber-400 text-xl">${(u.coins || 0).toLocaleString()}</div>
-          </div>
-          <div class="bg-zinc-800/50 rounded p-3">
-            <div class="text-xs text-zinc-400">ปลดล็อกแล้ว</div>
-            <div class="font-bold text-zinc-200 text-xl">${u.unlocked || 0} ตอน</div>
-          </div>
-        </div>
-      </div>
+  const renderBadgeCard = (b) => {
+    const earned = earnedSet.has(b.id);
+    const grad = colorMap[b.color] || colorMap.zinc;
+    const reqMin = (b.requirement && b.requirement.value) || 0;
+    const progressPct = earned ? 100 : Math.min(99, Math.floor((totalMin / Math.max(1, reqMin)) * 100));
+    const remaining = Math.max(0, reqMin - totalMin);
+    const borderCls = earned ? ('border-' + (b.color || 'zinc') + '-500/50') : 'border-zinc-800';
+    const opacityCls = earned ? '' : 'opacity-60 grayscale';
+    const headerGrad = earned ? grad : 'from-zinc-800 to-zinc-900';
+    let footer;
+    if (earned) {
+      footer = '<div class="text-[10px] text-emerald-400 font-bold mt-1.5">✓ ปลดล็อกแล้ว</div>';
+    } else {
+      footer = '<div class="mt-1.5"><div class="h-1.5 bg-zinc-800 rounded overflow-hidden"><div class="h-full bg-gradient-to-r ' + grad + '" style="width:' + progressPct + '%"></div></div><div class="text-[10px] text-zinc-500 mt-0.5">เหลืออีก ' + fmtMin(remaining) + '</div></div>';
+    }
+    return '<div class="relative rounded-2xl overflow-hidden border ' + borderCls + ' ' + opacityCls + '">' +
+      '<div class="bg-gradient-to-br ' + headerGrad + ' p-4 sm:p-5 text-center">' +
+      '<div class="text-5xl sm:text-6xl mb-2">' + escapeHtml(b.icon || '🏅') + '</div>' +
+      '<div class="font-black text-white text-base sm:text-lg">' + escapeHtml(b.name || b.id) + '</div>' +
+      '<div class="text-[10px] sm:text-xs text-white/80 mt-1">ดูครบ ' + fmtMin(reqMin) + '</div>' +
+      '</div>' +
+      '<div class="bg-zinc-950 px-3 py-2.5">' +
+      '<div class="text-[10px] text-zinc-400 leading-snug min-h-[28px]">' + escapeHtml(b.reward || '-') + '</div>' +
+      footer +
+      '</div></div>';
+  };
 
-      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-5">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="font-bold">📜 ประวัติการเติมเงิน / VIP</h3>
-          <button id="purchaseRefreshBtn" class="text-xs text-zinc-400 hover:text-white">🔄 รีเฟรช</button>
-        </div>
-        <div id="purchaseList" class="text-sm">
-          <div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div>
-        </div>
-      </div>
+  const sortedMiles = allMilestones.slice().sort((a, b) => (a.threshold || 0) - (b.threshold || 0));
+  const nextMile = sortedMiles.find(m => !claimedSet.has(m.id) && totalTopup < (m.threshold || 0));
+  const prevMile = [...sortedMiles].reverse().find(m => totalTopup >= (m.threshold || 0));
+  let mileBarHtml = '';
+  if (nextMile) {
+    const base = prevMile ? prevMile.threshold : 0;
+    const span = nextMile.threshold - base;
+    const filled = totalTopup - base;
+    const pct = Math.max(0, Math.min(100, Math.floor((filled / Math.max(1, span)) * 100)));
+    const remain = Math.max(0, nextMile.threshold - totalTopup);
+    let rewardHtml = '';
+    if (nextMile.bonusCoins) rewardHtml += '<span class="text-amber-400 font-bold">+' + nextMile.bonusCoins.toLocaleString() + ' MKW</span>';
+    if (nextMile.bonusCoins && nextMile.bonusVipDays) rewardHtml += ' + ';
+    if (nextMile.bonusVipDays) rewardHtml += '<span class="text-purple-300 font-bold">VIP ' + nextMile.bonusVipDays + ' วัน</span>';
+    mileBarHtml = '<div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-5 mb-5">' +
+      '<div class="flex items-center justify-between mb-3"><h3 class="font-bold text-sm sm:text-base">🎯 ระดับถัดไป: ' + escapeHtml(nextMile.label || nextMile.id) + '</h3><span class="text-xs text-zinc-500">' + totalTopup.toLocaleString() + ' / ' + nextMile.threshold.toLocaleString() + ' MKW</span></div>' +
+      '<div class="h-3 bg-zinc-800 rounded-full overflow-hidden mb-2"><div class="h-full bg-gradient-to-r from-amber-400 to-orange-500" style="width:' + pct + '%"></div></div>' +
+      '<div class="text-xs text-zinc-400">เติมอีก <span class="text-amber-400 font-bold">' + remain.toLocaleString() + ' MKW</span> เพื่อรับ: ' + rewardHtml + '</div></div>';
+  } else if (sortedMiles.length) {
+    mileBarHtml = '<div class="bg-gradient-to-r from-amber-500/20 to-orange-500/20 border border-amber-500/30 rounded-2xl p-4 sm:p-5 mb-5 text-center">' +
+      '<div class="text-3xl mb-1">🏆</div><div class="font-bold text-amber-300">คุณปลดล็อกครบทุกระดับแล้ว!</div><div class="text-xs text-zinc-400 mt-1">ขอบคุณที่สนับสนุนเรา</div></div>';
+  }
 
-      <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
-        <h3 class="font-bold mb-4">🔑 เปลี่ยนรหัสผ่าน</h3>
-        <form id="pwForm" class="space-y-4">
-          <div>
-            <label class="text-xs text-zinc-400 mb-1 block">รหัสผ่านปัจจุบัน</label>
-            <input id="cur" type="password" required class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/>
-          </div>
-          <div>
-            <label class="text-xs text-zinc-400 mb-1 block">รหัสผ่านใหม่ (ขั้นต่ำ 3 ตัว)</label>
-            <input id="new1" type="password" required minlength="3" class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/>
-          </div>
-          <div>
-            <label class="text-xs text-zinc-400 mb-1 block">ยืนยันรหัสผ่านใหม่</label>
-            <input id="new2" type="password" required minlength="3" class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/>
-          </div>
-          <div id="pwMsg" class="text-sm hidden"></div>
-          <button type="submit" class="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold">บันทึกรหัสผ่านใหม่</button>
-          <p class="text-xs text-zinc-500 text-center">หมายเหตุ: เปลี่ยนรหัสแล้วจะ logout จากอุปกรณ์อื่นทั้งหมด (เครื่องนี้ยังใช้ได้)</p>
-        </form>
-      </div>
-    </div>
-  `, 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8');
+  const claimedHtml = sortedMiles.filter(m => claimedSet.has(m.id)).map(function(m) {
+    let rew = '';
+    if (m.bonusCoins) rew += '+' + m.bonusCoins + ' MKW';
+    if (m.bonusCoins && m.bonusVipDays) rew += ' + ';
+    if (m.bonusVipDays) rew += '+VIP ' + m.bonusVipDays + ' วัน';
+    return '<div class="flex items-center gap-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">' +
+      '<div class="text-2xl">🎁</div>' +
+      '<div class="flex-1 min-w-0"><div class="text-sm font-bold text-emerald-300 truncate">' + escapeHtml(m.label || m.id) + '</div><div class="text-[10px] text-zinc-400">' + (m.threshold || 0).toLocaleString() + ' MKW • ' + rew + '</div></div>' +
+      '<div class="text-emerald-400 text-xl">✓</div>' +
+      '</div>';
+  }).join('');
 
-  $('#pwForm').onsubmit = async e => {
+  const unlockedCount = (u.unlocked && u.unlocked.length) || 0;
+  const earnedCount = (u.badges && u.badges.length) || 0;
+  const avatar = escapeHtml((u.username[0] || '?').toUpperCase());
+  const vipTextEsc = escapeHtml(vipText);
+
+  const walletHtml = '<div class="bg-gradient-to-br from-zinc-900 to-zinc-950 border border-zinc-800 rounded-2xl p-5 mb-5">' +
+    '<div class="flex items-center gap-4 mb-4">' +
+    '<div class="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-br from-red-500 to-rose-700 flex items-center justify-center font-black text-2xl sm:text-3xl text-white shadow-lg shadow-red-500/30">' + avatar + '</div>' +
+    '<div class="flex-1 min-w-0"><div class="text-xl sm:text-2xl font-black truncate">' + escapeHtml(u.username) + '</div>' +
+    '<div class="mt-1 flex items-center gap-2 flex-wrap">' + roleBadge(u.role) + ' <span class="text-xs text-zinc-400">' + vipTextEsc + '</span></div>' +
+    '</div></div>' +
+    '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 text-sm">' +
+    '<div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3"><div class="text-[10px] sm:text-xs text-zinc-400">เหรียญ MKW</div><div class="font-black text-amber-400 text-lg sm:text-xl">' + (u.coins || 0).toLocaleString() + '</div></div>' +
+    '<div class="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3"><div class="text-[10px] sm:text-xs text-zinc-400">Online Point</div><div class="font-black text-emerald-400 text-lg sm:text-xl">' + (u.points || 0).toLocaleString() + '</div><div class="text-[9px] text-zinc-500">วันนี้ ' + (u.pointsToday || 0) + '/' + (u.pointsDailyCap || 0) + '</div></div>' +
+    '<div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3"><div class="text-[10px] sm:text-xs text-zinc-400">เวลาดูสะสม</div><div class="font-black text-blue-400 text-lg sm:text-xl">' + fmtMin(totalMin) + '</div></div>' +
+    '<div class="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3"><div class="text-[10px] sm:text-xs text-zinc-400">เติมสะสม</div><div class="font-black text-purple-300 text-lg sm:text-xl">' + totalTopup.toLocaleString() + '</div><div class="text-[9px] text-zinc-500">MKW</div></div>' +
+    '</div>' +
+    '<div class="mt-3 grid grid-cols-2 gap-2 text-xs">' +
+    '<div class="bg-zinc-800/50 rounded p-2 text-center"><span class="text-zinc-400">ปลดล็อกตอน:</span> <span class="font-bold text-zinc-200">' + unlockedCount + '</span></div>' +
+    '<div class="bg-zinc-800/50 rounded p-2 text-center"><span class="text-zinc-400">เหรียญตรา:</span> <span class="font-bold text-amber-300">' + earnedCount + '/' + allBadges.length + '</span></div>' +
+    '</div></div>';
+
+  const badgesSection = allBadges.length
+    ? '<div class="mb-5"><h3 class="font-bold mb-3 flex items-center gap-2 text-base sm:text-lg">🏅 เหรียญตราของฉัน <span class="text-xs text-zinc-500 font-normal">(' + earnedCount + '/' + allBadges.length + ')</span></h3><div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">' + allBadges.map(renderBadgeCard).join('') + '</div></div>'
+    : '';
+
+  const claimedSection = claimedHtml
+    ? '<div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 sm:p-5 mb-5"><h3 class="font-bold mb-3 text-sm sm:text-base">🎁 รางวัลที่ได้รับแล้ว</h3><div class="space-y-2">' + claimedHtml + '</div></div>'
+    : '';
+
+  const purchaseSection = '<div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-5">' +
+    '<div class="flex items-center justify-between mb-4"><h3 class="font-bold text-sm sm:text-base">📜 ประวัติการเติมเงิน / VIP</h3><button id="purchaseRefreshBtn" class="text-xs text-zinc-400 hover:text-white">🔄 รีเฟรช</button></div>' +
+    '<div id="purchaseList" class="text-sm"><div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div></div>' +
+    '</div>';
+
+  const pwSection = '<div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">' +
+    '<h3 class="font-bold mb-4 text-sm sm:text-base">🔑 เปลี่ยนรหัสผ่าน</h3>' +
+    '<form id="pwForm" class="space-y-4">' +
+    '<div><label class="text-xs text-zinc-400 mb-1 block">รหัสผ่านปัจจุบัน</label><input id="cur" type="password" required class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/></div>' +
+    '<div><label class="text-xs text-zinc-400 mb-1 block">รหัสผ่านใหม่ (ขั้นต่ำ 3 ตัว)</label><input id="new1" type="password" required minlength="3" class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/></div>' +
+    '<div><label class="text-xs text-zinc-400 mb-1 block">ยืนยันรหัสผ่านใหม่</label><input id="new2" type="password" required minlength="3" class="w-full px-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-lg focus:outline-none focus:border-red-500 text-white"/></div>' +
+    '<div id="pwMsg" class="text-sm hidden"></div>' +
+    '<button type="submit" class="w-full py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-lg font-semibold">บันทึกรหัสผ่านใหม่</button>' +
+    '<p class="text-xs text-zinc-500 text-center">หมายเหตุ: เปลี่ยนรหัสแล้วจะ logout จากอุปกรณ์อื่นทั้งหมด</p>' +
+    '</form></div>';
+
+  await mountPage('', '<div class="max-w-4xl mx-auto"><h2 class="text-2xl sm:text-3xl font-black mb-1">โปรไฟล์</h2><p class="text-sm text-zinc-500 mb-6">ข้อมูลบัญชีของ ' + escapeHtml(u.username) + '</p>' + walletHtml + badgesSection + mileBarHtml + claimedSection + purchaseSection + pwSection + '</div>', 'max-w-[1600px] mx-auto px-4 sm:px-6 py-8');
+
+  $('#pwForm').onsubmit = async (e) => {
     e.preventDefault();
     const cur = $('#cur').value;
     const n1 = $('#new1').value;
@@ -3828,7 +3914,6 @@ async function initProfilePage() {
       await backendPost('/api/user/change-password', { currentPassword: cur, newPassword: n1 });
       msg.textContent = '✓ เปลี่ยนรหัสผ่านสำเร็จ';
       msg.classList.add('text-emerald-400');
-      // อัปเดต remember-me ถ้าเคยติ๊กไว้
       const saved = JSON.parse(localStorage.getItem('mkw_remember') || 'null');
       if (saved && saved.username === auth.user.username) {
         localStorage.setItem('mkw_remember', JSON.stringify({ username: saved.username, password: n1 }));
@@ -3840,10 +3925,9 @@ async function initProfilePage() {
     }
   };
 
-  // Purchase history
   const loadPurchase = async () => {
     const el = $('#purchaseList');
-    el.innerHTML = `<div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div>`;
+    el.innerHTML = '<div class="text-center py-6 text-zinc-500 text-xs">กำลังโหลด...</div>';
     try {
       const d = await backendGet('/api/user/purchase-history');
       renderPurchaseHistory(el, d);
@@ -3854,6 +3938,7 @@ async function initProfilePage() {
   $('#purchaseRefreshBtn').onclick = loadPurchase;
   loadPurchase();
 }
+
 
 function renderPurchaseHistory(container, d) {
   const topups = (d.topups || []).slice().reverse();  // newest first

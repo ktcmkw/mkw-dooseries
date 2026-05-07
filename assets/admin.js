@@ -37,6 +37,8 @@ async function initAdminPage() {
       <button data-tab="seenbooks" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🆕 หนังใหม่</button>
       <button data-tab="apisources" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🎬 API Sources</button>
       <button data-tab="urlbuilder" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🔧 URL Builder</button>
+      <button data-tab="badges"     class="tab-btn px-4 py-2 text-sm rounded-t-lg">🏅 เหรียญตรา</button>
+      <button data-tab="milestones" class="tab-btn px-4 py-2 text-sm rounded-t-lg">🎯 สะสมเติมเงิน</button>
     </div>
     <div id="tabContent"></div>
   `);
@@ -76,6 +78,8 @@ async function loadTab(tab) {
     if (tab === 'seenbooks') return renderSeenBooksTab(c);
     if (tab === 'apisources') return renderApiSourcesTab(c);
     if (tab === 'urlbuilder') return renderUrlBuilderTab(c);
+    if (tab === 'badges')     return renderBadgesTab(c);
+    if (tab === 'milestones') return renderMilestonesTab(c);
   } catch (e) {
     c.innerHTML = errorBanner(e, { title: 'โหลด tab ไม่สำเร็จ' });
   }
@@ -135,6 +139,8 @@ async function renderUsersTab(c) {
                   <summary class="cursor-pointer text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded list-none">⚙ จัดการ ▾</summary>
                   <div class="absolute right-0 mt-1 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl p-1 z-20 flex flex-col text-left min-w-[170px]">
                     <button class="act-coins text-xs px-3 py-1.5 hover:bg-amber-500/20 text-amber-300 rounded text-left">+/- Coin</button>
+                    <button class="act-points text-xs px-3 py-1.5 hover:bg-emerald-500/20 text-emerald-300 rounded text-left">+/- Online Point</button>
+                    <button class="act-topup text-xs px-3 py-1.5 hover:bg-purple-500/20 text-purple-300 rounded text-left">ตั้ง totalTopup</button>
                     <button class="act-role text-xs px-3 py-1.5 hover:bg-blue-500/20 text-blue-300 rounded text-left">เปลี่ยน Role</button>
                     <button class="act-vip text-xs px-3 py-1.5 hover:bg-amber-500/20 text-amber-300 rounded text-left">ตั้ง VIP หมดอายุ</button>
                     <button class="act-pw text-xs px-3 py-1.5 hover:bg-purple-500/20 text-purple-300 rounded text-left">รีเซ็ตรหัสผ่าน</button>
@@ -175,6 +181,33 @@ async function renderUsersTab(c) {
     if (isNaN(delta)) { alert('ตัวเลขไม่ถูกต้อง'); return; }
     try { await backendPost(`/api/admin/user/${encodeURIComponent(username)}/coins`, { delta }); renderUsersTab(c); }
     catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('.act-points').forEach(b => b.onclick = async () => {
+    const username = tr(b).dataset.u;
+    const input = prompt(`เพิ่ม/ลด Online Point ของ ${username} (เช่น 100 หรือ -50):
+Point บวก = เพิ่ม lifetimePoints ด้วย (จะ trigger badge ถ้าเข้าเกณฑ์)`);
+    if (input === null) return;
+    const delta = parseInt(input, 10);
+    if (isNaN(delta) || delta === 0) { alert('ต้องเป็นตัวเลข ≠ 0'); return; }
+    try {
+      const r = await backendPost(`/api/admin/user/${encodeURIComponent(username)}/points`, { delta });
+      alert(`✓ ปรับสำเร็จ — point: ${r.points} (lifetime: ${r.lifetimePoints})`);
+      renderUsersTab(c);
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
+  });
+  $$('.act-topup').forEach(b => b.onclick = async () => {
+    const username = tr(b).dataset.u;
+    const input = prompt(`ตั้ง totalTopupCoins ของ ${username} (จำนวน MKW เติมสะสม):
+(จะ re-check milestones ทั้งหมด มอบรางวัลที่ยังไม่ได้รับ)`);
+    if (input === null) return;
+    const value = parseInt(input, 10);
+    if (isNaN(value) || value < 0) { alert('ต้องเป็นตัวเลข >= 0'); return; }
+    try {
+      const r = await backendPost(`/api/admin/user/${encodeURIComponent(username)}/total-topup`, { value });
+      alert(`✓ ตั้งค่า totalTopup = ${r.totalTopupCoins}
+Milestones ที่รับไปแล้ว: ${(r.claimedMilestones||[]).length} รายการ`);
+      renderUsersTab(c);
+    } catch (e) { alert('ไม่สำเร็จ: ' + e.message); }
   });
   $$('.act-role').forEach(b => b.onclick = async () => {
     const username = tr(b).dataset.u;
@@ -2906,4 +2939,125 @@ function _ubGuessDetailFieldMap(payload) {
   if (!guessed.detailRoot) warnings.push('หา detail root object ไม่เจอ — อาจต้องใส่ detailRoot manual');
   if (!guessed.epListPath) warnings.push('หา episode list ไม่เจอใน detail — อาจต้อง fetch /alleps แยก');
   return { guessed, warnings };
+}
+
+// ============================================================
+// Tab: Badges CRUD
+// ============================================================
+async function renderBadgesTab(c) {
+  let badges = [];
+  try {
+    const r = await backendGet('/api/admin/badges');
+    badges = Array.isArray(r.badges) ? r.badges : [];
+  } catch (e) {
+    c.innerHTML = errorBanner(e, { title: 'load badges fail' });
+    return;
+  }
+  const COLORS = ['emerald', 'blue', 'amber', 'purple', 'red', 'pink', 'teal', 'rose', 'orange', 'zinc'];
+  const renderRow = (b) => '<tr class="border-t border-zinc-800 badge-row">' +
+    '<td class="px-2 py-2"><input class="fld-id w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs font-mono" value="' + escapeHtml(b.id || '') + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-icon w-16 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-center text-lg" value="' + escapeHtml(b.icon || '🏅') + '" maxlength="4"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-name w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-sm" value="' + escapeHtml(b.name || '') + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-minutes w-24 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right text-sm" type="number" min="0" value="' + (b.requirement && b.requirement.value || 0) + '"/></td>' +
+    '<td class="px-2 py-2"><select class="fld-color w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs">' +
+    COLORS.map(col => '<option value="' + col + '"' + (col === (b.color || 'zinc') ? ' selected' : '') + '>' + col + '</option>').join('') +
+    '</select></td>' +
+    '<td class="px-2 py-2"><input class="fld-reward w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-sm" value="' + escapeHtml(b.reward || '') + '"/></td>' +
+    '<td class="px-2 py-2 text-right"><button class="btn-remove px-2 py-1 bg-red-500/20 hover:bg-red-500/40 text-red-300 rounded text-xs">ลบ</button></td>' +
+    '</tr>';
+  c.innerHTML = '<div class="mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl"><h3 class="font-bold mb-1">🏅 จัดการเหรียญตรา</h3><p class="text-xs text-zinc-500">เหรียญจะมอบให้ user อัตโนมัติเมื่อดูครบเวลา (นาทีรวมสะสม)</p></div>' +
+    '<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-x-auto mb-3"><table class="w-full text-sm min-w-[900px]">' +
+    '<thead class="bg-zinc-800/50 text-zinc-400 text-xs"><tr><th class="px-2 py-3 text-left">ID</th><th class="px-2 py-3 text-left">Icon</th><th class="px-2 py-3 text-left">ชื่อ</th><th class="px-2 py-3 text-right">นาที</th><th class="px-2 py-3 text-left">สี</th><th class="px-2 py-3 text-left">รางวัล</th><th class="px-2 py-3"></th></tr></thead>' +
+    '<tbody id="badgeRows">' + badges.map(renderRow).join('') + '</tbody></table></div>' +
+    '<div class="flex gap-2 items-center"><button id="addBadge" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded">➕ เพิ่มเหรียญ</button><button id="saveBadges" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm rounded font-bold">💾 บันทึก</button><span id="badgesMsg" class="text-xs ml-2"></span></div>';
+  const tbody = document.getElementById('badgeRows');
+  const collectBadges = () => Array.from(tbody.querySelectorAll('.badge-row')).map(tr => ({
+    id: tr.querySelector('.fld-id').value.trim(),
+    icon: tr.querySelector('.fld-icon').value.trim() || '🏅',
+    name: tr.querySelector('.fld-name').value.trim(),
+    color: tr.querySelector('.fld-color').value,
+    reward: tr.querySelector('.fld-reward').value.trim(),
+    requirement: { type: 'minutes', value: parseInt(tr.querySelector('.fld-minutes').value, 10) || 0 },
+  }));
+  const bindRow = () => tbody.querySelectorAll('.btn-remove').forEach(b => b.onclick = () => b.closest('tr').remove());
+  bindRow();
+  document.getElementById('addBadge').onclick = () => {
+    const cur = collectBadges();
+    cur.push({ id: 'b_new_' + Date.now().toString(36).slice(-4), icon: '🏅', name: 'เหรียญใหม่', color: 'zinc', reward: '', requirement: { type: 'minutes', value: 60 } });
+    tbody.innerHTML = cur.map(renderRow).join('');
+    bindRow();
+  };
+  document.getElementById('saveBadges').onclick = async () => {
+    const msg = document.getElementById('badgesMsg');
+    msg.textContent = 'กำลังบันทึก...';
+    msg.className = 'text-xs ml-2 text-zinc-400';
+    try {
+      const r = await backendPost('/api/admin/badges', { badges: collectBadges() });
+      msg.textContent = '✓ บันทึก ' + ((r.badges && r.badges.length) || 0) + ' เหรียญ';
+      msg.className = 'text-xs ml-2 text-emerald-400';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    } catch (e) {
+      msg.textContent = '✕ ' + e.message;
+      msg.className = 'text-xs ml-2 text-red-400';
+    }
+  };
+}
+
+// ============================================================
+// Tab: Topup Milestones CRUD
+// ============================================================
+async function renderMilestonesTab(c) {
+  let list = [];
+  try {
+    const r = await backendGet('/api/admin/topup-milestones');
+    list = Array.isArray(r.milestones) ? r.milestones : [];
+  } catch (e) {
+    c.innerHTML = errorBanner(e, { title: 'load milestones fail' });
+    return;
+  }
+  const renderRow = (m) => '<tr class="border-t border-zinc-800 mile-row">' +
+    '<td class="px-2 py-2"><input class="fld-id w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-xs font-mono" value="' + escapeHtml(m.id || '') + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-threshold w-28 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right text-sm" type="number" min="1" value="' + (m.threshold || 0) + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-coins w-24 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right text-sm text-amber-400" type="number" min="0" value="' + (m.bonusCoins || 0) + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-vip w-20 px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-right text-sm text-purple-300" type="number" min="0" value="' + (m.bonusVipDays || 0) + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-label w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-sm" value="' + escapeHtml(m.label || '') + '"/></td>' +
+    '<td class="px-2 py-2"><input class="fld-desc w-full px-2 py-1 bg-zinc-950 border border-zinc-800 rounded text-sm" value="' + escapeHtml(m.description || '') + '"/></td>' +
+    '<td class="px-2 py-2 text-right"><button class="btn-remove px-2 py-1 bg-red-500/20 hover:bg-red-500/40 text-red-300 rounded text-xs">ลบ</button></td>' +
+    '</tr>';
+  c.innerHTML = '<div class="mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl"><h3 class="font-bold mb-1">🎯 รางวัลสะสมเติมเงิน</h3><p class="text-xs text-zinc-500">User ที่เติมเงินสะสมครบจะได้รับโบนัสอัตโนมัติ</p></div>' +
+    '<div class="bg-zinc-900 border border-zinc-800 rounded-xl overflow-x-auto mb-3"><table class="w-full text-sm min-w-[1100px]">' +
+    '<thead class="bg-zinc-800/50 text-zinc-400 text-xs"><tr><th class="px-2 py-3 text-left">ID</th><th class="px-2 py-3 text-right">ยอดสะสม ≥</th><th class="px-2 py-3 text-right">+MKW</th><th class="px-2 py-3 text-right">+VIP</th><th class="px-2 py-3 text-left">ชื่อ</th><th class="px-2 py-3 text-left">รายละเอียด</th><th class="px-2 py-3"></th></tr></thead>' +
+    '<tbody id="mileRows">' + list.map(renderRow).join('') + '</tbody></table></div>' +
+    '<div class="flex gap-2 items-center"><button id="addMile" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm rounded">➕ เพิ่ม</button><button id="saveMiles" class="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm rounded font-bold">💾 บันทึก</button><span id="mileMsg" class="text-xs ml-2"></span></div>';
+  const tbody = document.getElementById('mileRows');
+  const collect = () => Array.from(tbody.querySelectorAll('.mile-row')).map(tr => ({
+    id: tr.querySelector('.fld-id').value.trim(),
+    threshold: parseInt(tr.querySelector('.fld-threshold').value, 10) || 0,
+    bonusCoins: parseInt(tr.querySelector('.fld-coins').value, 10) || 0,
+    bonusVipDays: parseInt(tr.querySelector('.fld-vip').value, 10) || 0,
+    label: tr.querySelector('.fld-label').value.trim(),
+    description: tr.querySelector('.fld-desc').value.trim(),
+  }));
+  const bindRow = () => tbody.querySelectorAll('.btn-remove').forEach(b => b.onclick = () => b.closest('tr').remove());
+  bindRow();
+  document.getElementById('addMile').onclick = () => {
+    const cur = collect();
+    cur.push({ id: 'm_new_' + Date.now().toString(36).slice(-4), threshold: 100, bonusCoins: 50, bonusVipDays: 0, label: 'เติมครบ 100', description: '' });
+    tbody.innerHTML = cur.map(renderRow).join('');
+    bindRow();
+  };
+  document.getElementById('saveMiles').onclick = async () => {
+    const msg = document.getElementById('mileMsg');
+    msg.textContent = 'กำลังบันทึก...';
+    msg.className = 'text-xs ml-2 text-zinc-400';
+    try {
+      const r = await backendPost('/api/admin/topup-milestones', { milestones: collect() });
+      msg.textContent = '✓ บันทึก ' + ((r.milestones && r.milestones.length) || 0) + ' รายการ';
+      msg.className = 'text-xs ml-2 text-emerald-400';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    } catch (e) {
+      msg.textContent = '✕ ' + e.message;
+      msg.className = 'text-xs ml-2 text-red-400';
+    }
+  };
 }
